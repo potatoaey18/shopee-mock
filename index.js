@@ -15,7 +15,8 @@
  * ║    GET  /api/v2/order/get_order_list                         ║
  * ║    GET  /api/v2/order/get_order_detail                       ║
  * ║    POST /api/v2/logistics/init_shipment                      ║
- * ║    GET  /api/v2/auth/shop/get_auth_link  (OAuth redirect)    ║
+ * ║    GET  /api/v2/shop/auth_partner  (OAuth redirect)          ║
+ * ║    GET  /api/v2/auth/shop/get_auth_link  (OAuth link)        ║
  * ╚══════════════════════════════════════════════════════════════╝
  */
 
@@ -32,10 +33,7 @@ const PARTNER_KEY = process.env.PARTNER_KEY || '1';
 const PORT        = process.env.PORT        || 3000;
 
 // ── HMAC SIGNATURE HELPER ─────────────────────────────────────────────
-// Shopee signs requests as: HMAC-SHA256(partner_id + api_path + timestamp + access_token + shop_id)
 function verifySignature(req) {
-  // In demo mode, accept any request with the correct partner_id
-  // Set STRICT_SIG=true in env to enforce real HMAC checking
   if (process.env.STRICT_SIG !== 'true') return true;
 
   const { partner_id, timestamp, sign } = req.query;
@@ -77,13 +75,13 @@ const DB = {
   },
 
   products: [
-    { item_id: 10001, name: "Lay's Classic Salted Chips 60g", description: "Snacks / Chips — Lay\'s Classic Salted Chips 60g", category_id: 100, price: 62, stock: 100, sku: 'LAYS-001', barcode: '4800888101001', status: 'NORMAL' },
-    { item_id: 10002, name: "Lay's Cheese & Onion Chips 60g", description: "Snacks / Chips — Lay\'s Cheese & Onion Chips 60g", category_id: 100, price: 62, stock: 100, sku: 'LAYS-002', barcode: '4800888101002', status: 'NORMAL' },
-    { item_id: 10003, name: "Lay's BBQ Chips 60g", description: "Snacks / Chips — Lay\'s BBQ Chips 60g", category_id: 100, price: 62, stock: 100, sku: 'LAYS-003', barcode: '4800888101003', status: 'NORMAL' },
-    { item_id: 10004, name: "Lay's Sour Cream & Onion 85g", description: "Snacks / Chips — Lay\'s Sour Cream & Onion 85g", category_id: 100, price: 89, stock: 100, sku: 'LAYS-004', barcode: '4800888101004', status: 'NORMAL' },
+    { item_id: 10001, name: "Lay's Classic Salted Chips 60g", description: "Snacks / Chips — Lay's Classic Salted Chips 60g", category_id: 100, price: 62, stock: 100, sku: 'LAYS-001', barcode: '4800888101001', status: 'NORMAL' },
+    { item_id: 10002, name: "Lay's Cheese & Onion Chips 60g", description: "Snacks / Chips — Lay's Cheese & Onion Chips 60g", category_id: 100, price: 62, stock: 100, sku: 'LAYS-002', barcode: '4800888101002', status: 'NORMAL' },
+    { item_id: 10003, name: "Lay's BBQ Chips 60g", description: "Snacks / Chips — Lay's BBQ Chips 60g", category_id: 100, price: 62, stock: 100, sku: 'LAYS-003', barcode: '4800888101003', status: 'NORMAL' },
+    { item_id: 10004, name: "Lay's Sour Cream & Onion 85g", description: "Snacks / Chips — Lay's Sour Cream & Onion 85g", category_id: 100, price: 89, stock: 100, sku: 'LAYS-004', barcode: '4800888101004', status: 'NORMAL' },
     { item_id: 10005, name: "Cheetos Crunchy 80g", description: "Snacks / Chips — Cheetos Crunchy 80g", category_id: 100, price: 62, stock: 100, sku: 'CHTO-001', barcode: '4800888102001', status: 'NORMAL' },
     { item_id: 10006, name: "Cheetos Puffs 80g", description: "Snacks / Chips — Cheetos Puffs 80g", category_id: 100, price: 62, stock: 100, sku: 'CHTO-002', barcode: '4800888102002', status: 'NORMAL' },
-    { item_id: 10007, name: "Cheetos Flamin' Hot 80g", description: "Snacks / Chips — Cheetos Flamin\' Hot 80g", category_id: 100, price: 62, stock: 100, sku: 'CHTO-003', barcode: '4800888102003', status: 'NORMAL' },
+    { item_id: 10007, name: "Cheetos Flamin' Hot 80g", description: "Snacks / Chips — Cheetos Flamin' Hot 80g", category_id: 100, price: 62, stock: 100, sku: 'CHTO-003', barcode: '4800888102003', status: 'NORMAL' },
     { item_id: 10008, name: "Doritos Nacho Cheese 100g", description: "Snacks / Chips — Doritos Nacho Cheese 100g", category_id: 100, price: 75, stock: 100, sku: 'DORI-001', barcode: '4800888103001', status: 'NORMAL' },
     { item_id: 10009, name: "Doritos Cool Ranch 100g", description: "Snacks / Chips — Doritos Cool Ranch 100g", category_id: 100, price: 75, stock: 100, sku: 'DORI-002', barcode: '4800888103002', status: 'NORMAL' },
     { item_id: 10010, name: "Doritos Spicy Sweet Chili 100g", description: "Snacks / Chips — Doritos Spicy Sweet Chili 100g", category_id: 100, price: 75, stock: 100, sku: 'DORI-003', barcode: '4800888103003', status: 'NORMAL' },
@@ -91,9 +89,9 @@ const DB = {
     { item_id: 10012, name: "Quaker Instant Oatmeal Sachet 40g", description: "Breakfast / Cereals — Quaker Instant Oatmeal Sachet 40g", category_id: 200, price: 35, stock: 100, sku: 'QKRO-002', barcode: '4800888104002', status: 'NORMAL' },
     { item_id: 10013, name: "Quaker Oats Granola Honey 400g", description: "Breakfast / Cereals — Quaker Oats Granola Honey 400g", category_id: 200, price: 189, stock: 100, sku: 'QKRO-003', barcode: '4800888104003', status: 'NORMAL' },
     { item_id: 10014, name: "Quaker Chewy Granola Bar Choc Chip 42g", description: "Snacks / Bars — Quaker Chewy Granola Bar Choc Chip 42g", category_id: 101, price: 45, stock: 100, sku: 'QKRO-004', barcode: '4800888104004', status: 'NORMAL' },
-    { item_id: 10015, name: "M&M's Milk Chocolate 100g", description: "Confectionery / Chocolate — M&M\'s Milk Chocolate 100g", category_id: 300, price: 129, stock: 100, sku: 'MNMS-001', barcode: '4800888105001', status: 'NORMAL' },
-    { item_id: 10016, name: "M&M's Peanut 100g", description: "Confectionery / Chocolate — M&M\'s Peanut 100g", category_id: 300, price: 129, stock: 100, sku: 'MNMS-002', barcode: '4800888105002', status: 'NORMAL' },
-    { item_id: 10017, name: "M&M's Crispy 100g", description: "Confectionery / Chocolate — M&M\'s Crispy 100g", category_id: 300, price: 129, stock: 100, sku: 'MNMS-003', barcode: '4800888105003', status: 'NORMAL' },
+    { item_id: 10015, name: "M&M's Milk Chocolate 100g", description: "Confectionery / Chocolate — M&M's Milk Chocolate 100g", category_id: 300, price: 129, stock: 100, sku: 'MNMS-001', barcode: '4800888105001', status: 'NORMAL' },
+    { item_id: 10016, name: "M&M's Peanut 100g", description: "Confectionery / Chocolate — M&M's Peanut 100g", category_id: 300, price: 129, stock: 100, sku: 'MNMS-002', barcode: '4800888105002', status: 'NORMAL' },
+    { item_id: 10017, name: "M&M's Crispy 100g", description: "Confectionery / Chocolate — M&M's Crispy 100g", category_id: 300, price: 129, stock: 100, sku: 'MNMS-003', barcode: '4800888105003', status: 'NORMAL' },
     { item_id: 10018, name: "Snickers Bar 52g", description: "Confectionery / Chocolate — Snickers Bar 52g", category_id: 300, price: 45, stock: 100, sku: 'SNIC-001', barcode: '4800888106001', status: 'NORMAL' },
     { item_id: 10019, name: "Snickers Peanut Butter Bar 52g", description: "Confectionery / Chocolate — Snickers Peanut Butter Bar 52g", category_id: 300, price: 49, stock: 100, sku: 'SNIC-002', barcode: '4800888106002', status: 'NORMAL' },
     { item_id: 10020, name: "Snickers Miniatures 240g", description: "Confectionery / Chocolate — Snickers Miniatures 240g", category_id: 300, price: 249, stock: 100, sku: 'SNIC-003', barcode: '4800888106003', status: 'NORMAL' },
@@ -392,57 +390,70 @@ function deductStock(itemId, sku){
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  AUTH  — OAuth authorization link
+//  AUTH — auth_partner (what Odoo actually calls to initiate OAuth)
+//
+//  FIX: previously this built a callback URL pointing back to the mock
+//  server itself, causing Odoo's redirect_url to be lost as a nested
+//  encoded parameter. Now it redirects straight to Odoo's callback URL
+//  with code + shop_id appended — no intermediate hop.
 // ─────────────────────────────────────────────────────────────────────
-// Odoo calls this to build the "Authorize Shop" redirect URL
+app.get('/api/v2/shop/auth_partner', (req, res) => {
+  const { redirect_url } = req.query;
+  if (!redirect_url) {
+    return res.status(400).json({
+      error:      'missing_redirect_url',
+      message:    'redirect_url is required.',
+      request_id: rid(),
+    });
+  }
+  const sep = redirect_url.includes('?') ? '&' : '?';
+  return res.redirect(`${redirect_url}${sep}code=MOCK_AUTH_CODE_2026&shop_id=${DB.shop.shop_id}`);
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  AUTH — get_auth_link (alternative path some Odoo connectors use)
+//
+//  FIX: previously returned an auth_url pointing to the mock's own
+//  /api/v2/auth/callback, which dropped Odoo's redirect_url. Now
+//  returns an auth_url that points directly to Odoo's callback with
+//  code + shop_id already appended, so no redirect chain is needed.
+// ─────────────────────────────────────────────────────────────────────
 app.get('/api/v2/auth/shop/get_auth_link', (req, res) => {
   const { redirect_url } = req.query;
-  // Return a mock auth URL that immediately redirects back to Odoo with a code
-  const authUrl = `${req.protocol}://${req.get('host')}/api/v2/auth/callback?code=MOCK_AUTH_CODE_2026&shop_id=${DB.shop.shop_id}&redirect=${encodeURIComponent(redirect_url || '')}`;
-  res.json({
-    error:      '',
-    message:    '',
-    request_id: rid(),
-    response:   { auth_url: authUrl }
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────
-//  AUTH  — OAuth callback (mock redirect back to Odoo)
-// ─────────────────────────────────────────────────────────────────────
-app.get('/api/v2/auth/callback', (req, res) => {
-  const { redirect, code, shop_id } = req.query;
-  if (redirect) {
-    const sep = redirect.includes('?') ? '&' : '?';
-    return res.redirect(`${redirect}${sep}code=${code}&shop_id=${shop_id}`);
+  if (!redirect_url) {
+    return res.json({
+      error:      'missing_redirect_url',
+      message:    'redirect_url is required.',
+      request_id: rid(),
+      response:   {},
+    });
   }
-  res.json({ code, shop_id, message: 'No redirect_url provided.' });
+  const sep      = redirect_url.includes('?') ? '&' : '?';
+  const auth_url = `${redirect_url}${sep}code=MOCK_AUTH_CODE_2026&shop_id=${DB.shop.shop_id}`;
+  res.json({ error: '', message: '', request_id: rid(), response: { auth_url } });
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  AUTH  — Token exchange
+//  AUTH — Token exchange
 // ─────────────────────────────────────────────────────────────────────
-// Odoo exchanges the auth code for access_token + refresh_token
 app.post('/api/v2/auth/token/get', (req, res) => {
-  const body = req.body;
-  // Accept any code in demo mode
   res.json({
     error:      '',
     message:    '',
     request_id: rid(),
     response: {
-      access_token:    'MOCK_ACCESS_TOKEN_' + Date.now(),
-      refresh_token:   'MOCK_REFRESH_TOKEN_' + Date.now(),
-      expire_in:       86400,
+      access_token:      'MOCK_ACCESS_TOKEN_' + Date.now(),
+      refresh_token:     'MOCK_REFRESH_TOKEN_' + Date.now(),
+      expire_in:         86400,
       refresh_expire_in: 2592000,
-      shop_id_list:    [DB.shop.shop_id],
-      merchant_id_list:[],
+      shop_id_list:      [DB.shop.shop_id],
+      merchant_id_list:  [],
     }
   });
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  AUTH  — Token refresh
+//  AUTH — Token refresh
 // ─────────────────────────────────────────────────────────────────────
 app.post('/api/v2/auth/access_token/get', (req, res) => {
   res.json({
@@ -456,22 +467,19 @@ app.post('/api/v2/auth/access_token/get', (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  SHOP  — get_shop_info
+//  SHOP — get_shop_info
 // ─────────────────────────────────────────────────────────────────────
 app.get('/api/v2/shop/get_shop_info', requireAuth, (req, res) => {
-  res.json({
-    error: '', message: '', request_id: rid(),
-    response: DB.shop
-  });
+  res.json({ error: '', message: '', request_id: rid(), response: DB.shop });
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  PRODUCTS  — get_item_list
+//  PRODUCTS — get_item_list
 // ─────────────────────────────────────────────────────────────────────
 app.get('/api/v2/product/get_item_list', requireAuth, (req, res) => {
-  const offset    = parseInt(req.query.offset)     || 0;
-  const pageSize  = parseInt(req.query.page_size)  || 50;
-  const itemStatus= req.query.item_status           || 'NORMAL';
+  const offset     = parseInt(req.query.offset)    || 0;
+  const pageSize   = parseInt(req.query.page_size) || 50;
+  const itemStatus = req.query.item_status          || 'NORMAL';
 
   const filtered = DB.products.filter(p => p.status === itemStatus || itemStatus === 'ALL');
   const page     = filtered.slice(offset, offset + pageSize);
@@ -480,8 +488,8 @@ app.get('/api/v2/product/get_item_list', requireAuth, (req, res) => {
   res.json({
     error: '', message: '', request_id: rid(),
     response: {
-      item:      page.map(p => ({ item_id: p.item_id, item_status: p.status })),
-      total_count: filtered.length,
+      item:          page.map(p => ({ item_id: p.item_id, item_status: p.status })),
+      total_count:   filtered.length,
       has_next_page: hasMore,
       next_offset:   hasMore ? offset + pageSize : null,
     }
@@ -489,12 +497,12 @@ app.get('/api/v2/product/get_item_list', requireAuth, (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  PRODUCTS  — get_item_base_info
+//  PRODUCTS — get_item_base_info
 // ─────────────────────────────────────────────────────────────────────
 app.get('/api/v2/product/get_item_base_info', requireAuth, (req, res) => {
-  const raw     = req.query.item_id_list || '';
-  const ids     = raw.split(',').map(Number).filter(Boolean);
-  const items   = ids.length
+  const raw   = req.query.item_id_list || '';
+  const ids   = raw.split(',').map(Number).filter(Boolean);
+  const items = ids.length
     ? DB.products.filter(p => ids.includes(p.item_id))
     : DB.products;
 
@@ -502,20 +510,20 @@ app.get('/api/v2/product/get_item_base_info', requireAuth, (req, res) => {
     error: '', message: '', request_id: rid(),
     response: {
       item_list: items.map(p => ({
-        item_id:      p.item_id,
-        item_name:    p.name,
-        description:  p.description,
-        category_id:  p.category_id,
-        item_status:  p.status,
+        item_id:     p.item_id,
+        item_name:   p.name,
+        description: p.description,
+        category_id: p.category_id,
+        item_status: p.status,
         price_info: [{
-          currency:         'PHP',
-          original_price:   p.price,
-          current_price:    p.price,
+          currency:       'PHP',
+          original_price: p.price,
+          current_price:  p.price,
           inflated_price_of_original_price: p.price,
         }],
         stock_info_v2: {
           summary_info: {
-            total_reserved_stock: 0,
+            total_reserved_stock:  0,
             total_available_stock: p.stock,
           }
         },
@@ -531,13 +539,12 @@ app.get('/api/v2/product/get_item_base_info', requireAuth, (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  ORDERS  — get_order_list
+//  ORDERS — get_order_list
 // ─────────────────────────────────────────────────────────────────────
 app.get('/api/v2/order/get_order_list', requireAuth, (req, res) => {
-  const pageSize   = parseInt(req.query.page_size) || 20;
-  const timeFrom   = parseInt(req.query.time_range_field === 'update_time' ? req.query.update_time_from : req.query.create_time_from) || 0;
-  const timeTo     = parseInt(req.query.time_range_field === 'update_time' ? req.query.update_time_to   : req.query.create_time_to)   || ts();
-  const orderStatus= req.query.order_status;
+  const timeFrom    = parseInt(req.query.time_range_field === 'update_time' ? req.query.update_time_from : req.query.create_time_from) || 0;
+  const timeTo      = parseInt(req.query.time_range_field === 'update_time' ? req.query.update_time_to   : req.query.create_time_to)   || ts();
+  const orderStatus = req.query.order_status;
 
   let orders = DB.orders.filter(o => o.create_time >= timeFrom && o.create_time <= timeTo);
   if (orderStatus) orders = orders.filter(o => o.order_status === orderStatus);
@@ -551,14 +558,14 @@ app.get('/api/v2/order/get_order_list', requireAuth, (req, res) => {
         create_time:  o.create_time,
         update_time:  o.update_time,
       })),
-      more:       false,
+      more:        false,
       next_cursor: '',
     }
   });
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  ORDERS  — get_order_detail
+//  ORDERS — get_order_detail
 // ─────────────────────────────────────────────────────────────────────
 app.get('/api/v2/order/get_order_detail', requireAuth, (req, res) => {
   const raw  = req.query.order_sn_list || '';
@@ -572,56 +579,22 @@ app.get('/api/v2/order/get_order_detail', requireAuth, (req, res) => {
     response: {
       order_list: list.map(o => ({
         ...o,
-        message_to_seller: '',
-        note:              '',
-        pay_time:          o.create_time + 300,
-        days_to_ship:      3,
-        ship_by_date:      o.create_time + 86400 * 3,
-        invoice_data:      null,
+        message_to_seller:         '',
+        note:                      '',
+        pay_time:                  o.create_time + 300,
+        days_to_ship:              3,
+        ship_by_date:              o.create_time + 86400 * 3,
+        invoice_data:              null,
         checkout_shipping_carrier: 'SPX Express',
-        actual_shipping_cost: 0,
-        total_amount: o.actual_price,
+        actual_shipping_cost:      0,
+        total_amount:              o.actual_price,
       }))
     }
   });
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  LOGISTICS  — init_shipment
-// ─────────────────────────────────────────────────────────────────────
-app.post('/api/v2/logistics/init_shipment', requireAuth, (req, res) => {
-  const { order_sn } = req.body;
-  const order = DB.orders.find(o => o.order_sn === order_sn);
-  if (!order) {
-    return res.json({ error: 'order_not_found', message: `Order ${order_sn} not found.`, request_id: rid(), response: {} });
-  }
-  const tracking = 'PHSPX' + Date.now();
-  order.tracking_no    = tracking;
-  order.order_status   = 'SHIPPED';
-  order.update_time    = ts();
-
-  res.json({
-    error: '', message: '', request_id: rid(),
-    response: {
-      order_sn,
-      tracking_number: tracking,
-      hint_message:    'Shipment initiated successfully.',
-    }
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────
-//  AUTH  — auth_partner (Odoo calls this to get the OAuth redirect URL)
-// ─────────────────────────────────────────────────────────────────────
-app.get('/api/v2/shop/auth_partner', (req, res) => {
-  const redirectUrl = req.query.redirect_url || '';
-  const authUrl = `${req.protocol}://${req.get('host')}/api/v2/auth/callback?code=MOCK_AUTH_CODE_2026&shop_id=${DB.shop.shop_id}&redirect=${encodeURIComponent(redirectUrl)}`;
-  // Redirect immediately instead of returning JSON
-  res.redirect(authUrl);
-});
-
-// ─────────────────────────────────────────────────────────────────────
-//  LOGISTICS  — get_shipping_parameter
+//  LOGISTICS — get_shipping_parameter
 // ─────────────────────────────────────────────────────────────────────
 app.get('/api/v2/logistics/get_shipping_parameter', requireAuth, (req, res) => {
   const { order_sn } = req.query;
@@ -632,22 +605,22 @@ app.get('/api/v2/logistics/get_shipping_parameter', requireAuth, (req, res) => {
       pickup: {
         address_list: [{
           address_id: 1,
-          address: '123 Mock Warehouse St, Manila, PH',
+          address:    '123 Mock Warehouse St, Manila, PH',
           time_slot_list: [{
             pickup_time_id: 'slot_001',
-            date: new Date().toISOString().split('T')[0],
-            time_text: '9:00 AM - 12:00 PM',
+            date:           new Date().toISOString().split('T')[0],
+            time_text:      '9:00 AM - 12:00 PM',
           }]
         }]
       },
-      dropoff: { branch_list: [] },
-      non_integrated: null,
+      dropoff:         { branch_list: [] },
+      non_integrated:  null,
     }
   });
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  LOGISTICS  — ship_order (Odoo uses this, not init_shipment)
+//  LOGISTICS — ship_order
 // ─────────────────────────────────────────────────────────────────────
 app.post('/api/v2/logistics/ship_order', requireAuth, (req, res) => {
   const { order_sn } = req.body;
@@ -655,11 +628,10 @@ app.post('/api/v2/logistics/ship_order', requireAuth, (req, res) => {
   if (!order) {
     return res.json({ error: 'order_not_found', message: `Order ${order_sn} not found.`, request_id: rid(), response: {} });
   }
-  const tracking = 'PHSPX' + Date.now();
+  const tracking     = 'PHSPX' + Date.now();
   order.tracking_no  = tracking;
   order.order_status = 'SHIPPED';
   order.update_time  = ts();
-  // Deduct stock for each item in the order
   order.item_list.forEach(item => {
     const product = DB.products.find(p => p.item_id === item.item_id);
     if (product) product.stock = Math.max(0, product.stock - item.model_quantity_purchased);
@@ -671,11 +643,34 @@ app.post('/api/v2/logistics/ship_order', requireAuth, (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  LOGISTICS  — get_tracking_number
+//  LOGISTICS — init_shipment
+// ─────────────────────────────────────────────────────────────────────
+app.post('/api/v2/logistics/init_shipment', requireAuth, (req, res) => {
+  const { order_sn } = req.body;
+  const order = DB.orders.find(o => o.order_sn === order_sn);
+  if (!order) {
+    return res.json({ error: 'order_not_found', message: `Order ${order_sn} not found.`, request_id: rid(), response: {} });
+  }
+  const tracking     = 'PHSPX' + Date.now();
+  order.tracking_no  = tracking;
+  order.order_status = 'SHIPPED';
+  order.update_time  = ts();
+  res.json({
+    error: '', message: '', request_id: rid(),
+    response: {
+      order_sn,
+      tracking_number: tracking,
+      hint_message:    'Shipment initiated successfully.',
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  LOGISTICS — get_tracking_number
 // ─────────────────────────────────────────────────────────────────────
 app.get('/api/v2/logistics/get_tracking_number', requireAuth, (req, res) => {
   const { order_sn } = req.query;
-  const order = DB.orders.find(o => o.order_sn === order_sn);
+  const order   = DB.orders.find(o => o.order_sn === order_sn);
   const tracking = order ? (order.tracking_no || 'PHSPX' + Date.now()) : 'PHSPX' + Date.now();
   res.json({
     error: '', message: '', request_id: rid(),
@@ -684,7 +679,7 @@ app.get('/api/v2/logistics/get_tracking_number', requireAuth, (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  LOGISTICS  — create_shipping_document
+//  LOGISTICS — create_shipping_document
 // ─────────────────────────────────────────────────────────────────────
 app.post('/api/v2/logistics/create_shipping_document', requireAuth, (req, res) => {
   const { order_list } = req.body;
@@ -692,9 +687,9 @@ app.post('/api/v2/logistics/create_shipping_document', requireAuth, (req, res) =
     error: '', message: '', request_id: rid(),
     response: {
       result_list: (order_list || []).map(o => ({
-        order_sn: o.order_sn,
-        status: 'READY',
-        fail_error: '',
+        order_sn:     o.order_sn,
+        status:       'READY',
+        fail_error:   '',
         fail_message: '',
       }))
     }
@@ -702,19 +697,19 @@ app.post('/api/v2/logistics/create_shipping_document', requireAuth, (req, res) =
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  LOGISTICS  — get_shipping_document_result
+//  LOGISTICS — get_shipping_document_result
 // ─────────────────────────────────────────────────────────────────────
 app.get('/api/v2/logistics/get_shipping_document_result', requireAuth, (req, res) => {
   const raw = req.query.order_list || '[]';
   let orders = [];
-  try { orders = JSON.parse(raw); } catch(e) {}
+  try { orders = JSON.parse(raw); } catch (e) {}
   res.json({
     error: '', message: '', request_id: rid(),
     response: {
       result_list: orders.map(o => ({
-        order_sn: o.order_sn,
-        status: 'READY',
-        fail_error: '',
+        order_sn:     o.order_sn,
+        status:       'READY',
+        fail_error:   '',
         fail_message: '',
       }))
     }
@@ -722,7 +717,7 @@ app.get('/api/v2/logistics/get_shipping_document_result', requireAuth, (req, res
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  LOGISTICS  — download_shipping_document
+//  LOGISTICS — download_shipping_document
 // ─────────────────────────────────────────────────────────────────────
 app.post('/api/v2/logistics/download_shipping_document', requireAuth, (req, res) => {
   res.json({
@@ -732,7 +727,7 @@ app.post('/api/v2/logistics/download_shipping_document', requireAuth, (req, res)
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  PRODUCT  — update_stock (Pain point #2 & #3: real-time stock sync)
+//  PRODUCT — update_stock
 // ─────────────────────────────────────────────────────────────────────
 app.post('/api/v2/product/update_stock', requireAuth, (req, res) => {
   const { item_id, stock_list } = req.body;
@@ -752,11 +747,10 @@ app.post('/api/v2/product/update_stock', requireAuth, (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  WEBHOOK RECEIVER  (Odoo-side simulation)
+//  WEBHOOK RECEIVER
 // ─────────────────────────────────────────────────────────────────────
 app.post('/webhook/push', (req, res) => {
-  const payload = req.body;
-  console.log('[WEBHOOK RECEIVED]', JSON.stringify(payload, null, 2));
+  console.log('[WEBHOOK RECEIVED]', JSON.stringify(req.body, null, 2));
   res.json({ code: 0, message: 'success', request_id: rid() });
 });
 
@@ -765,8 +759,8 @@ app.post('/webhook/push', (req, res) => {
 // ─────────────────────────────────────────────────────────────────────
 app.use((req, res) => {
   res.status(404).json({
-    error:   'endpoint_not_found',
-    message: `${req.method} ${req.path} is not implemented in this mock.`,
+    error:      'endpoint_not_found',
+    message:    `${req.method} ${req.path} is not implemented in this mock.`,
     request_id: rid(),
   });
 });
