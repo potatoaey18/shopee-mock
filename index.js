@@ -780,6 +780,7 @@ app.post('/api/v2/product/update_stock', requireAuth, (req, res) => {
 //  ORDERS — get_order_list  (BUG FIX: orderStatus was undefined)
 // ─────────────────────────────────────────────────────────────────────
 app.get('/api/v2/order/get_order_list', requireAuth, (req, res) => {
+  console.log('[ORDER LIST] query:', req.query);
   const timeFrom    = parseInt(req.query.update_time_from || req.query.create_time_from) || 0;
   const timeTo      = parseInt(req.query.update_time_to   || req.query.create_time_to)   || ts();
   const orderStatus = req.query.order_status || null; // ← was undefined (bug fixed)
