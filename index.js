@@ -165,27 +165,207 @@ const DB = {
 };
 
 // ─────────────────────────────────────────────────────────────────────
-//  ROOT — health check
+//  ROOT — demo dashboard UI
 // ─────────────────────────────────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({
-    service:    'Shopee Mock API Server',
-    version:    '2.0.0',
-    status:     'ok',
-    timestamp:  ts(),
-    partner_id: PARTNER_ID,
-    note:       'Paste this server base URL into Odoo → Shopee API Endpoint field.',
-    endpoints:  [
-      'POST /api/v2/auth/token/get',
-      'GET  /api/v2/auth/shop/get_auth_link',
-      'GET  /api/v2/shop/get_shop_info',
-      'GET  /api/v2/product/get_item_list',
-      'GET  /api/v2/product/get_item_base_info',
-      'GET  /api/v2/order/get_order_list',
-      'GET  /api/v2/order/get_order_detail',
-      'POST /api/v2/logistics/init_shipment',
-    ]
-  });
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Shopee Mock API — Demo Dashboard</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f5;color:#1a1a1a;font-size:14px}
+.header{background:#EE4D2D;padding:14px 24px;display:flex;align-items:center;gap:12px}
+.header-logo{width:34px;height:34px;background:white;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:700;color:#EE4D2D;font-size:15px;flex-shrink:0}
+.header h1{color:white;font-size:15px;font-weight:500}
+.badge{margin-left:auto;background:rgba(255,255,255,0.2);color:white;font-size:11px;padding:3px 10px;border-radius:20px;display:flex;align-items:center;gap:5px;white-space:nowrap}
+.dot{width:7px;height:7px;border-radius:50%;background:#4ade80;display:inline-block;animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.container{padding:18px;max-width:960px;margin:0 auto}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}
+@media(max-width:600px){.cards{grid-template-columns:repeat(2,1fr)}}
+.card{background:white;border:1px solid #e5e5e5;border-radius:10px;padding:12px 14px}
+.card-label{font-size:11px;color:#888;margin-bottom:4px}
+.card-value{font-size:22px;font-weight:600}
+.card-value.orange{color:#EE4D2D}
+.card-value.green{color:#16a34a}
+.section{background:white;border:1px solid #e5e5e5;border-radius:10px;margin-bottom:14px;overflow:hidden}
+.section-header{padding:12px 16px;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;justify-content:space-between}
+.section-title{font-size:13px;font-weight:600}
+.btn{padding:6px 14px;border-radius:7px;font-size:12px;cursor:pointer;border:none;font-weight:600;transition:all .15s}
+.btn-primary{background:#EE4D2D;color:white}
+.btn-primary:hover:not(:disabled){background:#d94426}
+.btn-primary:disabled{background:#ccc;cursor:not-allowed}
+.btn-outline{background:transparent;border:1px solid #ddd;color:#333}
+.btn-outline:hover:not(:disabled){background:#f5f5f5}
+.btn-outline:disabled{opacity:.5;cursor:not-allowed}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;padding:8px 16px;font-size:11px;color:#888;font-weight:500;border-bottom:1px solid #f0f0f0;background:#fafafa}
+td{padding:9px 16px;border-bottom:1px solid #f5f5f5}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#fafafa}
+.status{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600}
+.status.ready{background:#FFF3E0;color:#E65100}
+.status.shipped{background:#E8F5E9;color:#2E7D32}
+.status.normal{background:#E3F2FD;color:#1565C0}
+.progress-bar{height:5px;background:#f0f0f0;border-radius:3px;overflow:hidden;margin-top:6px}
+.progress-fill{height:100%;background:#EE4D2D;border-radius:3px;transition:width .4s ease}
+.sync-log{font-size:11px;color:#555;font-family:'SF Mono',monospace;padding:10px 16px;max-height:110px;overflow-y:auto;background:#fafafa;border-top:1px solid #f0f0f0}
+.log-line{padding:2px 0;display:flex;gap:8px}
+.log-time{color:#bbb;min-width:58px}
+.log-ok{color:#16a34a}
+.log-info{color:#2563eb}
+.banner{background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:12px 16px;display:flex;align-items:center;gap:8px;margin-bottom:14px}
+.banner i{color:#16a34a;font-size:18px}
+.banner span{font-size:13px;color:#15803d;font-weight:500}
+.shop-info{display:flex;align-items:center;gap:12px;padding:12px 16px}
+.shop-avatar{width:38px;height:38px;background:#FFF3E0;border-radius:9px;display:flex;align-items:center;justify-content:center;color:#EE4D2D;font-size:18px;flex-shrink:0}
+.shop-name{font-size:13px;font-weight:600}
+.shop-meta{font-size:11px;color:#888;margin-top:2px}
+.auth-body{padding:0 16px 14px}
+.auth-label{font-size:11px;color:#888;margin-bottom:5px}
+.empty{color:#bbb;text-align:center;padding:24px;font-size:12px}
+.mono{font-family:'SF Mono',monospace;font-size:11px}
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="header-logo">S</div>
+  <h1>Shopee Mock API &mdash; Demo Dashboard</h1>
+  <span class="badge"><span class="dot"></span>Live &nbsp;&bull;&nbsp; v2.0.0 &nbsp;&bull;&nbsp; Partner ID: ${PARTNER_ID}</span>
+</div>
+
+<div class="container">
+
+  <div class="banner" id="banner" style="display:none">
+    <i class="ti ti-circle-check"></i>
+    <span>Shop authorized and connected &mdash; Demo Shopee Store PH (ID: 123456, Region: PH)</span>
+  </div>
+
+  <div class="cards">
+    <div class="card"><div class="card-label">Shop status</div><div class="card-value orange" id="shop-status">Standby</div></div>
+    <div class="card"><div class="card-label">Orders synced</div><div class="card-value" id="orders-count">0</div></div>
+    <div class="card"><div class="card-label">Products synced</div><div class="card-value" id="products-count">0</div></div>
+    <div class="card"><div class="card-label">API calls made</div><div class="card-value" id="api-calls">0</div></div>
+  </div>
+
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">Shop authorization</span>
+      <button class="btn btn-primary" id="auth-btn" onclick="startAuth()">Authorize shop</button>
+    </div>
+    <div class="shop-info">
+      <div class="shop-avatar"><i class="ti ti-building-store"></i></div>
+      <div>
+        <div class="shop-name">Demo Shopee Store PH</div>
+        <div class="shop-meta">Region: PH &nbsp;&bull;&nbsp; Shop ID: 123456 &nbsp;&bull;&nbsp; Endpoint: ${req.protocol}://${req.get('host')}</div>
+      </div>
+    </div>
+    <div class="auth-body">
+      <div class="auth-label" id="auth-label">Ready to authorize</div>
+      <div class="progress-bar"><div class="progress-fill" id="auth-progress" style="width:0%"></div></div>
+    </div>
+    <div class="sync-log" id="auth-log"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">Orders</span>
+      <button class="btn btn-outline" id="sync-btn" onclick="syncOrders()" disabled>Sync orders</button>
+    </div>
+    <table>
+      <thead><tr><th>Order no.</th><th>Customer</th><th>Items</th><th>Amount</th><th>Status</th></tr></thead>
+      <tbody id="orders-table"><tr><td colspan="5" class="empty">Authorize shop to load orders</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">Products</span>
+      <span style="font-size:11px;color:#888" id="products-label">&mdash;</span>
+    </div>
+    <table>
+      <thead><tr><th>SKU</th><th>Product name</th><th>Price</th><th>Stock</th><th>Status</th></tr></thead>
+      <tbody id="products-table"><tr><td colspan="5" class="empty">Authorize shop to load products</td></tr></tbody>
+    </table>
+  </div>
+
+</div>
+
+<script>
+let apiCalls=0,authorized=false;
+function nowTime(){const d=new Date();return[d.getHours(),d.getMinutes(),d.getSeconds()].map(n=>String(n).padStart(2,'0')).join(':')}
+function addLog(msg,type){const log=document.getElementById('auth-log');const line=document.createElement('div');line.className='log-line';line.innerHTML='<span class="log-time">'+nowTime()+'</span><span class="log-'+type+'">'+msg+'</span>';log.appendChild(line);log.scrollTop=log.scrollHeight}
+function setProgress(pct,label){document.getElementById('auth-progress').style.width=pct+'%';document.getElementById('auth-label').textContent=label}
+function incApi(){document.getElementById('api-calls').textContent=++apiCalls}
+
+function startAuth(){
+  const btn=document.getElementById('auth-btn');
+  btn.disabled=true;btn.textContent='Authorizing...';
+  addLog('Requesting authorization link from mock server...','info');
+  setProgress(15,'Requesting authorization link...');
+  setTimeout(()=>{incApi();addLog('GET /api/v2/auth/shop/get_auth_link \u2192 200 OK','ok');setProgress(35,'OAuth redirect received...');addLog('Auth code received: MOCK_AUTH_CODE_2026','ok')},800);
+  setTimeout(()=>{incApi();addLog('POST /api/v2/auth/token/get \u2192 200 OK','ok');setProgress(65,'Exchanging token...');addLog('Access token granted \u2014 expires in 30 days','ok')},1800);
+  setTimeout(()=>{incApi();addLog('GET /api/v2/shop/get_shop_info \u2192 200 OK','ok');setProgress(90,'Loading shop info...');addLog('Shop: Demo Shopee Store PH (ID: 123456, Region: PH)','ok')},2600);
+  setTimeout(()=>{
+    setProgress(100,'Authorization complete');
+    addLog('Shop authorized successfully','ok');
+    authorized=true;
+    document.getElementById('shop-status').textContent='Connected';
+    document.getElementById('shop-status').style.color='#16a34a';
+    document.getElementById('banner').style.display='flex';
+    document.getElementById('sync-btn').disabled=false;
+    btn.textContent='Authorized';btn.style.background='#16a34a';
+    loadProducts();syncOrders();
+  },3400);
+}
+
+function syncOrders(){
+  if(!authorized)return;incApi();
+  const orders=[
+    {sn:'SPX20260521001',customer:'Juan Dela Cruz',items:"Lay\\'s Classic x3, Doritos x2, M&M\\'s x1",amount:'\u20B1515',status:'READY_TO_SHIP'},
+    {sn:'SPX20260521002',customer:'Maria Santos',items:'Nutella 350g x2, Ferrero Rocher x4',amount:'\u20B1874',status:'SHIPPED'},
+    {sn:'SPX20260521003',customer:'Jose Reyes',items:'Quaker Oats x1, Cheetos x2, Tic Tac x3',amount:'\u20B1337',status:'READY_TO_SHIP'},
+    {sn:'SPX20260521004',customer:'Ana Mendoza',items:'Ferrero Rocher 16pcs x1',amount:'\u20B1419',status:'SHIPPED'},
+  ];
+  const tbody=document.getElementById('orders-table');tbody.innerHTML='';
+  let i=0;
+  const iv=setInterval(()=>{
+    if(i>=orders.length){clearInterval(iv);return}
+    const o=orders[i],cls=o.status==='SHIPPED'?'shipped':'ready';
+    tbody.innerHTML+='<tr><td class="mono">'+o.sn+'</td><td>'+o.customer+'</td><td style="color:#888">'+o.items+'</td><td style="font-weight:600">'+o.amount+'</td><td><span class="status '+cls+'">'+o.status+'</span></td></tr>';
+    document.getElementById('orders-count').textContent=++i;
+  },300);
+}
+
+function loadProducts(){
+  incApi();
+  const products=[
+    {sku:'LAYS-001',name:"Lay\\'s Classic Salted Chips 60g",price:'\u20B162',stock:100},
+    {sku:'LAYS-002',name:"Lay\\'s Cheese & Onion Chips 60g",price:'\u20B162',stock:100},
+    {sku:'CHTO-001',name:'Cheetos Crunchy 80g',price:'\u20B162',stock:100},
+    {sku:'DORI-001',name:'Doritos Nacho Cheese 100g',price:'\u20B175',stock:100},
+    {sku:'NUTE-001',name:'Nutella Hazelnut Spread 350g',price:'\u20B1259',stock:100},
+    {sku:'MNMS-001',name:"M&M\\'s Milk Chocolate 100g",price:'\u20B1129',stock:100},
+    {sku:'FERR-002',name:'Ferrero Rocher 16pcs Box 200g',price:'\u20B1419',stock:100},
+    {sku:'QKRO-001',name:'Quaker Oats 800g',price:'\u20B1149',stock:100},
+    {sku:'SNIC-001',name:'Snickers Bar 52g',price:'\u20B145',stock:100},
+    {sku:'LOAC-001',name:'Loacker Classic Vanilla 175g',price:'\u20B1135',stock:100},
+  ];
+  const tbody=document.getElementById('products-table');tbody.innerHTML='';
+  let i=0;
+  const iv=setInterval(()=>{
+    if(i>=products.length){clearInterval(iv);document.getElementById('products-label').textContent=products.length+' products synced';return}
+    const p=products[i];
+    tbody.innerHTML+='<tr><td class="mono">'+p.sku+'</td><td>'+p.name+'</td><td style="font-weight:600">'+p.price+'</td><td>'+p.stock+'</td><td><span class="status normal">NORMAL</span></td></tr>';
+    document.getElementById('products-count').textContent=++i;
+  },180);
+}
+</script>
+</body>
+</html>`);
 });
 
 // ─────────────────────────────────────────────────────────────────────
