@@ -1,0 +1,16 @@
+{
+  "name": "shopee-mock-api",
+  "version": "2.0.0",
+  "description": "Shopee Open Platform API mock server for Odoo integration demo",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
