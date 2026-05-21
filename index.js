@@ -100,11 +100,17 @@ function resolveOdooCallback(req, extraParams) {
 function buildAuthUrl(req) {
   const { redirect_url } = req.query;
   const self = `${req.protocol}://${req.get('host')}`;
+
+  // Use redirect_url from Odoo if provided, otherwise fall back to ODOO_BASE_URL
+  const odooCallback = redirect_url
+    || (ODOO_BASE_URL ? `${ODOO_BASE_URL}/web/action/shopee_connector.action_shopee_auth_callback` : null);
+
   const params = new URLSearchParams({
     shop_id: DB.shop.shop_id,
     code: 'MOCK_AUTH_CODE_2026',
-    ...(redirect_url ? { redirect_url } : {}),
+    ...(odooCallback ? { redirect_url: odooCallback } : {}),
   });
+
   return `${self}/api/v2/auth/authorize?${params.toString()}`;
 }
 
