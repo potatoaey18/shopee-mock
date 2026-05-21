@@ -17,6 +17,7 @@
  * ║    POST /api/v2/logistics/init_shipment                      ║
  * ║    GET  /api/v2/shop/auth_partner  (OAuth redirect)          ║
  * ║    GET  /api/v2/auth/shop/get_auth_link  (OAuth link)        ║
+ * ║    GET  /api/v2/auth/authorize  (browser auth page)          ║
  * ╚══════════════════════════════════════════════════════════════╝
  */
 
@@ -61,15 +62,7 @@ function rid() { return 'mock_' + Math.random().toString(36).slice(2, 10).toUppe
 function ts()  { return Math.floor(Date.now() / 1000); }
 
 // ── ODOO CALLBACK URL RESOLVER ────────────────────────────────────────
-// Odoo's Shopee connector expects the auth code to be delivered to one
-// of these known callback paths. We try to derive the Odoo base URL
-// from (in order of preference):
-//   1. ODOO_BASE_URL env var (most reliable — set this)
-//   2. The Referer header on the incoming request
-//   3. A fallback that just resolves back to ourselves (breaks the flow
-//      but avoids a crash)
 function resolveOdooCallback(req, extraParams) {
-  // Known Odoo Shopee OAuth callback paths (try in order)
   const ODOO_CALLBACK_PATHS = [
     '/web/action/shopee_connector.action_shopee_auth_callback',
     '/shopee/auth/callback',
@@ -80,7 +73,6 @@ function resolveOdooCallback(req, extraParams) {
   let odooBase = ODOO_BASE_URL;
 
   if (!odooBase) {
-    // Try to derive from Referer header
     const referer = req.get('Referer') || req.get('Origin') || '';
     if (referer) {
       try {
@@ -91,7 +83,6 @@ function resolveOdooCallback(req, extraParams) {
   }
 
   if (!odooBase) {
-    // Last resort: log a warning and return self-callback
     console.warn('[AUTH] ODOO_BASE_URL not set and no Referer header — cannot redirect to Odoo.');
     console.warn('[AUTH] Set the ODOO_BASE_URL environment variable to your Odoo instance URL.');
     const self = `${req.protocol}://${req.get('host')}`;
@@ -101,6 +92,20 @@ function resolveOdooCallback(req, extraParams) {
 
   const qs = new URLSearchParams({ ...extraParams }).toString();
   return `${odooBase}${ODOO_CALLBACK_PATHS[0]}?${qs}`;
+}
+
+// ── BUILD AUTH URL ────────────────────────────────────────────────────
+// Returns a URL pointing to our browser-facing /api/v2/auth/authorize page.
+// Odoo receives this URL as JSON and opens it in the user's browser.
+function buildAuthUrl(req) {
+  const { redirect_url } = req.query;
+  const self = `${req.protocol}://${req.get('host')}`;
+  const params = new URLSearchParams({
+    shop_id: DB.shop.shop_id,
+    code: 'MOCK_AUTH_CODE_2026',
+    ...(redirect_url ? { redirect_url } : {}),
+  });
+  return `${self}/api/v2/auth/authorize?${params.toString()}`;
 }
 
 // ── IN-MEMORY DATA STORE ──────────────────────────────────────────────
@@ -416,49 +421,24 @@ function deductStock(itemId,sku){
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  AUTH — auth_partner + get_auth_link
+//  AUTH — auth_partner
 //
-//  The Odoo Shopee connector calls one of these two endpoints to begin
-//  OAuth. It expects back a JSON response containing { auth_url }.
-//  Odoo then opens auth_url in the user's browser. When the user lands
-//  on that URL, the mock must redirect them to Odoo's own callback so
-//  Odoo can receive the code and shop_id.
-//
-//  Strategy:
-//    1. If redirect_url is in the query  → embed it directly in auth_url
-//       so the browser round-trip delivers code+shop_id straight to Odoo.
-//    2. If redirect_url is absent        → build auth_url pointing to our
-//       own /api/v2/auth/callback, which will redirect to ODOO_BASE_URL
-//       + known Odoo callback path when the browser hits it.
+//  Odoo calls this server-side and expects JSON back with { auth_url }.
+//  auth_url points to our browser-facing /api/v2/auth/authorize page.
+//  Odoo opens that URL in the user's browser — no redirect from here.
 // ─────────────────────────────────────────────────────────────────────
-function buildAuthUrl(req) {
-  const { redirect_url } = req.query;
-  const params = { code: 'MOCK_AUTH_CODE_2026', shop_id: DB.shop.shop_id };
-
-  if (redirect_url) {
-    // Odoo told us exactly where to send the browser — use it directly
-    const sep = redirect_url.includes('?') ? '&' : '?';
-    return `${redirect_url}${sep}${new URLSearchParams(params).toString()}`;
-  }
-
-  // No redirect_url supplied: build a URL to our own callback handler,
-  // which will forward to Odoo using ODOO_BASE_URL or Referer
-  const self = `${req.protocol}://${req.get('host')}`;
-  return `${self}/api/v2/auth/callback?${new URLSearchParams(params).toString()}`;
-}
-
 app.get('/api/v2/shop/auth_partner', (req, res) => {
   console.log('[AUTH] auth_partner called — query:', req.query, '| headers.referer:', req.get('Referer'));
   const auth_url = buildAuthUrl(req);
   console.log('[AUTH] auth_url resolved to:', auth_url);
-  // Some connector versions expect a direct redirect; others parse JSON.
-  // Check Accept header: if it wants JSON, return JSON; otherwise redirect.
-  if (req.accepts('json') && !req.accepts('html')) {
-    return res.json({ error: '', message: '', request_id: rid(), response: { auth_url } });
-  }
-  res.redirect(auth_url);
+  res.json({ error: '', message: '', request_id: rid(), response: { auth_url } });
 });
 
+// ─────────────────────────────────────────────────────────────────────
+//  AUTH — get_auth_link
+//
+//  Same as auth_partner — always returns JSON with auth_url.
+// ─────────────────────────────────────────────────────────────────────
 app.get('/api/v2/auth/shop/get_auth_link', (req, res) => {
   console.log('[AUTH] get_auth_link called — query:', req.query, '| headers.referer:', req.get('Referer'));
   const auth_url = buildAuthUrl(req);
@@ -467,23 +447,97 @@ app.get('/api/v2/auth/shop/get_auth_link', (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
+//  AUTH — authorize (browser-facing page)
+//
+//  The user's browser lands here after Odoo opens auth_url.
+//  Shows a branded mock authorization page. When the user clicks
+//  "Authorize", the browser is redirected to Odoo's callback URL
+//  with code + shop_id attached.
+// ─────────────────────────────────────────────────────────────────────
+app.get('/api/v2/auth/authorize', (req, res) => {
+  const { redirect_url, shop_id, code } = req.query;
+  const callbackUrl = redirect_url
+    ? `${redirect_url}${redirect_url.includes('?') ? '&' : '?'}code=${code || 'MOCK_AUTH_CODE_2026'}&shop_id=${shop_id || DB.shop.shop_id}`
+    : resolveOdooCallback(req, { code: code || 'MOCK_AUTH_CODE_2026', shop_id: shop_id || DB.shop.shop_id });
+
+  console.log('[AUTH] authorize page — callbackUrl:', callbackUrl);
+
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Shopee — Authorize App</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f5;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.card{background:white;border-radius:16px;padding:32px;max-width:400px;width:90%;box-shadow:0 4px 24px rgba(0,0,0,0.08);text-align:center}
+.logo{width:56px;height:56px;background:#EE4D2D;border-radius:14px;display:flex;align-items:center;justify-content:center;color:white;font-size:26px;font-weight:700;margin:0 auto 16px}
+h2{font-size:18px;margin-bottom:6px}
+.sub{font-size:13px;color:#888;margin-bottom:24px}
+.shop-box{background:#fff8f6;border:1px solid #fde0d8;border-radius:10px;padding:14px;margin-bottom:24px;text-align:left}
+.shop-box .label{font-size:11px;color:#aaa;margin-bottom:2px}
+.shop-box .value{font-size:13px;font-weight:600;color:#1a1a1a}
+.permissions{text-align:left;margin-bottom:24px}
+.permissions .perm{display:flex;align-items:center;gap:8px;font-size:12px;color:#555;padding:5px 0;border-bottom:1px solid #f5f5f5}
+.permissions .perm:last-child{border-bottom:none}
+.perm-icon{color:#16a34a;font-size:15px}
+.btn{display:block;width:100%;padding:13px;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;border:none;transition:all .15s;margin-bottom:10px}
+.btn-primary{background:#EE4D2D;color:white}
+.btn-primary:hover{background:#d94426}
+.btn-secondary{background:#f5f5f5;color:#555}
+.btn-secondary:hover{background:#eee}
+.mock-badge{font-size:10px;color:#bbb;margin-top:16px}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">S</div>
+  <h2>Authorize App Access</h2>
+  <p class="sub">An app is requesting access to your Shopee store</p>
+  <div class="shop-box">
+    <div class="label">Store</div>
+    <div class="value">${DB.shop.shop_name}</div>
+    <div class="label" style="margin-top:8px">Shop ID</div>
+    <div class="value">${DB.shop.shop_id} &nbsp;&middot;&nbsp; ${DB.shop.region}</div>
+  </div>
+  <div class="permissions">
+    <div class="perm"><span class="perm-icon">&#10003;</span> Read and manage products &amp; inventory</div>
+    <div class="perm"><span class="perm-icon">&#10003;</span> Read and manage orders</div>
+    <div class="perm"><span class="perm-icon">&#10003;</span> Initiate shipments &amp; print labels</div>
+    <div class="perm"><span class="perm-icon">&#10003;</span> Access shop info &amp; settings</div>
+  </div>
+  <button class="btn btn-primary" id="auth-btn" onclick="authorize()">Authorize</button>
+  <button class="btn btn-secondary" onclick="window.close()">Cancel</button>
+  <div class="mock-badge">&#x1F7E0; Shopee Mock API &mdash; Demo environment</div>
+</div>
+<script>
+function authorize() {
+  const btn = document.getElementById('auth-btn');
+  btn.textContent = 'Authorizing...';
+  btn.disabled = true;
+  setTimeout(() => { window.location.href = ${JSON.stringify(callbackUrl)}; }, 800);
+}
+</script>
+</body>
+</html>`);
+});
+
+// ─────────────────────────────────────────────────────────────────────
 //  AUTH — callback
 //
-//  The browser lands here when Odoo didn't supply a redirect_url.
-//  We forward code+shop_id to Odoo's known callback path using
-//  ODOO_BASE_URL (env var) or fall back to the Referer header.
+//  Fallback handler for when no redirect_url was supplied and the
+//  browser lands here via buildAuthUrl's self-callback path.
+//  Forwards code + shop_id on to Odoo using ODOO_BASE_URL or Referer.
 // ─────────────────────────────────────────────────────────────────────
 app.get('/api/v2/auth/callback', (req, res) => {
   const { code, shop_id, redirect } = req.query;
   console.log('[AUTH] callback hit — query:', req.query, '| headers.referer:', req.get('Referer'));
 
-  // 1. Explicit redirect param (legacy path)
   if (redirect) {
     const sep = redirect.includes('?') ? '&' : '?';
     return res.redirect(`${redirect}${sep}code=${code}&shop_id=${shop_id}`);
   }
 
-  // 2. Derive Odoo base from env or Referer
   const destination = resolveOdooCallback(req, { code, shop_id });
   console.log('[AUTH] redirecting browser to Odoo callback:', destination);
   res.redirect(destination);
