@@ -596,6 +596,16 @@ app.post('/webhook/push', (req, res) => {
   res.json({ code: 0, message: 'success', request_id: rid() });
 });
 
+app.get('/api/v2/shop/auth_partner', (req, res) => {
+  const redirectUrl = req.query.redirect_url || '';
+  const authUrl = `${req.protocol}://${req.get('host')}/api/v2/auth/callback?code=MOCK_AUTH_CODE_2026&shop_id=${DB.shop.shop_id}&redirect=${encodeURIComponent(redirectUrl)}`;
+  res.json({
+    error: '',
+    message: '',
+    request_id: rid(),
+    response: { auth_url: authUrl }
+  });
+});
 // ─────────────────────────────────────────────────────────────────────
 //  404 catch-all
 // ─────────────────────────────────────────────────────────────────────
