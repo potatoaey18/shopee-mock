@@ -616,10 +616,8 @@ app.post('/api/v2/logistics/init_shipment', requireAuth, (req, res) => {
 app.get('/api/v2/shop/auth_partner', (req, res) => {
   const redirectUrl = req.query.redirect_url || '';
   const authUrl = `${req.protocol}://${req.get('host')}/api/v2/auth/callback?code=MOCK_AUTH_CODE_2026&shop_id=${DB.shop.shop_id}&redirect=${encodeURIComponent(redirectUrl)}`;
-  res.json({
-    error: '', message: '', request_id: rid(),
-    response: { auth_url: authUrl }
-  });
+  // Redirect immediately instead of returning JSON
+  res.redirect(authUrl);
 });
 
 // ─────────────────────────────────────────────────────────────────────
