@@ -98,12 +98,13 @@ function resolveOdooCallback(req, extraParams) {
 // Returns a URL pointing to our browser-facing /api/v2/auth/authorize page.
 // Odoo receives this URL as JSON and opens it in the user's browser.
 function buildAuthUrl(req) {
-  const { redirect_url } = req.query;
+  const { redirect, redirect_url } = req.query;
   const self = `${req.protocol}://${req.get('host')}`;
 
-  // Use redirect_url from Odoo if provided, otherwise fall back to ODOO_BASE_URL
-  const odooCallback = redirect_url
-    || (ODOO_BASE_URL ? `${ODOO_BASE_URL}/web/action/shopee_connector.action_shopee_auth_callback` : null);
+  // Odoo sends 'redirect', not 'redirect_url'
+  const odooCallback = redirect
+    || redirect_url
+    || (ODOO_BASE_URL ? `${ODOO_BASE_URL}/shopee/return_from_authorization` : null);
 
   const params = new URLSearchParams({
     shop_id: DB.shop.shop_id,
