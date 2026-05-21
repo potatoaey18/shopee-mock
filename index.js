@@ -129,34 +129,34 @@ const DB = {
 
   orders: [
     {
-      order_sn:         'SPX20260521001',
-      order_status:     'READY_TO_SHIP',
-      create_time:      ts() - 3600,
-      update_time:      ts() - 1800,
-      buyer_username:   'juan_delacruz',
-      recipient_name:   'Juan Dela Cruz',
-      actual_price:     515,
-      currency:         'PHP',
-      tracking_no:      '',
+      order_sn:       'SPX20260521001',
+      order_status:   'READY_TO_SHIP',
+      create_time:    ts() - 3600,
+      update_time:    ts() - 1800,
+      buyer_username: 'juan_delacruz',
+      recipient_name: 'Juan Dela Cruz',
+      actual_price:   515,
+      currency:       'PHP',
+      tracking_no:    '',
       item_list: [
         { item_id: 10001, item_name: "Lay's Classic Salted Chips 60g", model_sku: 'LAYS-001', model_quantity_purchased: 3, model_discounted_price: 62 },
-        { item_id: 10008, item_name: "Doritos Nacho Cheese 100g",       model_sku: 'DORI-001', model_quantity_purchased: 2, model_discounted_price: 75 },
-        { item_id: 10015, item_name: "M&M's Milk Chocolate 100g",       model_sku: 'MNMS-001', model_quantity_purchased: 1, model_discounted_price: 129 },
+        { item_id: 10008, item_name: "Doritos Nacho Cheese 100g",      model_sku: 'DORI-001', model_quantity_purchased: 2, model_discounted_price: 75 },
+        { item_id: 10015, item_name: "M&M's Milk Chocolate 100g",      model_sku: 'MNMS-001', model_quantity_purchased: 1, model_discounted_price: 129 },
       ],
     },
     {
-      order_sn:         'SPX20260521002',
-      order_status:     'SHIPPED',
-      create_time:      ts() - 86400,
-      update_time:      ts() - 43200,
-      buyer_username:   'maria_santos',
-      recipient_name:   'Maria Santos',
-      actual_price:     874,
-      currency:         'PHP',
-      tracking_no:      'PHSPX1234567890',
+      order_sn:       'SPX20260521002',
+      order_status:   'SHIPPED',
+      create_time:    ts() - 86400,
+      update_time:    ts() - 43200,
+      buyer_username: 'maria_santos',
+      recipient_name: 'Maria Santos',
+      actual_price:   874,
+      currency:       'PHP',
+      tracking_no:    'PHSPX1234567890',
       item_list: [
         { item_id: 10021, item_name: "Nutella Hazelnut Spread 350g", model_sku: 'NUTE-001', model_quantity_purchased: 2, model_discounted_price: 259 },
-        { item_id: 10035, item_name: "Ferrero Rocher 3pcs Box",       model_sku: 'FERR-001', model_quantity_purchased: 4, model_discounted_price: 89 },
+        { item_id: 10035, item_name: "Ferrero Rocher 3pcs Box",      model_sku: 'FERR-001', model_quantity_purchased: 4, model_discounted_price: 89 },
       ],
     },
   ],
@@ -390,47 +390,52 @@ function deductStock(itemId, sku){
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  AUTH — auth_partner (what Odoo actually calls to initiate OAuth)
+//  AUTH — auth_partner
 //
-//  FIX: previously this built a callback URL pointing back to the mock
-//  server itself, causing Odoo's redirect_url to be lost as a nested
-//  encoded parameter. Now it redirects straight to Odoo's callback URL
-//  with code + shop_id appended — no intermediate hop.
+//  Odoo calls this to start the OAuth flow. Two modes:
+//  1. redirect_url present → redirect straight to Odoo's callback with
+//     code + shop_id, skipping any intermediate hop.
+//  2. redirect_url absent  → return a JSON auth_url pointing to this
+//     server's own callback so Odoo can open it in a browser tab.
 // ─────────────────────────────────────────────────────────────────────
 app.get('/api/v2/shop/auth_partner', (req, res) => {
   const { redirect_url } = req.query;
-  if (!redirect_url) {
-    return res.status(400).json({
-      error:      'missing_redirect_url',
-      message:    'redirect_url is required.',
-      request_id: rid(),
-    });
+  if (redirect_url) {
+    const sep = redirect_url.includes('?') ? '&' : '?';
+    return res.redirect(`${redirect_url}${sep}code=MOCK_AUTH_CODE_2026&shop_id=${DB.shop.shop_id}`);
   }
-  const sep = redirect_url.includes('?') ? '&' : '?';
-  return res.redirect(`${redirect_url}${sep}code=MOCK_AUTH_CODE_2026&shop_id=${DB.shop.shop_id}`);
+  // No redirect_url: return a self-contained auth URL Odoo can open
+  const auth_url = `${req.protocol}://${req.get('host')}/api/v2/auth/callback?code=MOCK_AUTH_CODE_2026&shop_id=${DB.shop.shop_id}`;
+  res.json({ error: '', message: '', request_id: rid(), response: { auth_url } });
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  AUTH — get_auth_link (alternative path some Odoo connectors use)
+//  AUTH — get_auth_link
 //
-//  FIX: previously returned an auth_url pointing to the mock's own
-//  /api/v2/auth/callback, which dropped Odoo's redirect_url. Now
-//  returns an auth_url that points directly to Odoo's callback with
-//  code + shop_id already appended, so no redirect chain is needed.
+//  Same dual-mode logic as auth_partner above.
 // ─────────────────────────────────────────────────────────────────────
 app.get('/api/v2/auth/shop/get_auth_link', (req, res) => {
   const { redirect_url } = req.query;
-  if (!redirect_url) {
-    return res.json({
-      error:      'missing_redirect_url',
-      message:    'redirect_url is required.',
-      request_id: rid(),
-      response:   {},
-    });
+  if (redirect_url) {
+    const sep      = redirect_url.includes('?') ? '&' : '?';
+    const auth_url = `${redirect_url}${sep}code=MOCK_AUTH_CODE_2026&shop_id=${DB.shop.shop_id}`;
+    return res.json({ error: '', message: '', request_id: rid(), response: { auth_url } });
   }
-  const sep      = redirect_url.includes('?') ? '&' : '?';
-  const auth_url = `${redirect_url}${sep}code=MOCK_AUTH_CODE_2026&shop_id=${DB.shop.shop_id}`;
+  // No redirect_url: return a self-contained auth URL Odoo can open
+  const auth_url = `${req.protocol}://${req.get('host')}/api/v2/auth/callback?code=MOCK_AUTH_CODE_2026&shop_id=${DB.shop.shop_id}`;
   res.json({ error: '', message: '', request_id: rid(), response: { auth_url } });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  AUTH — callback (fallback for when no redirect_url is provided)
+// ─────────────────────────────────────────────────────────────────────
+app.get('/api/v2/auth/callback', (req, res) => {
+  const { redirect, code, shop_id } = req.query;
+  if (redirect) {
+    const sep = redirect.includes('?') ? '&' : '?';
+    return res.redirect(`${redirect}${sep}code=${code}&shop_id=${shop_id}`);
+  }
+  res.json({ code, shop_id, message: 'Authorization complete.' });
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -438,9 +443,7 @@ app.get('/api/v2/auth/shop/get_auth_link', (req, res) => {
 // ─────────────────────────────────────────────────────────────────────
 app.post('/api/v2/auth/token/get', (req, res) => {
   res.json({
-    error:      '',
-    message:    '',
-    request_id: rid(),
+    error: '', message: '', request_id: rid(),
     response: {
       access_token:      'MOCK_ACCESS_TOKEN_' + Date.now(),
       refresh_token:     'MOCK_REFRESH_TOKEN_' + Date.now(),
@@ -613,8 +616,8 @@ app.get('/api/v2/logistics/get_shipping_parameter', requireAuth, (req, res) => {
           }]
         }]
       },
-      dropoff:         { branch_list: [] },
-      non_integrated:  null,
+      dropoff:        { branch_list: [] },
+      non_integrated: null,
     }
   });
 });
@@ -670,7 +673,7 @@ app.post('/api/v2/logistics/init_shipment', requireAuth, (req, res) => {
 // ─────────────────────────────────────────────────────────────────────
 app.get('/api/v2/logistics/get_tracking_number', requireAuth, (req, res) => {
   const { order_sn } = req.query;
-  const order   = DB.orders.find(o => o.order_sn === order_sn);
+  const order    = DB.orders.find(o => o.order_sn === order_sn);
   const tracking = order ? (order.tracking_no || 'PHSPX' + Date.now()) : 'PHSPX' + Date.now();
   res.json({
     error: '', message: '', request_id: rid(),
