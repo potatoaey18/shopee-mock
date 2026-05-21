@@ -1,4 +1,4 @@
-/**
+**
  * ╔══════════════════════════════════════════════════════════════╗
  * ║  SHOPEE MOCK API SERVER                                      ║
  * ║  Mimics Shopee Open Platform API for Odoo integration demo   ║
@@ -32,16 +32,18 @@ const PARTNER_ID  = process.env.PARTNER_ID  || '1';
 const PARTNER_KEY = process.env.PARTNER_KEY || '1';
 const PORT        = process.env.PORT        || 3000;
 
+// ODOO_BASE_URL: base URL of your Odoo instance, e.g. https://myodoo.odoo.com
+// This is used to build the callback URL when Odoo omits redirect_url.
+const ODOO_BASE_URL = (process.env.ODOO_BASE_URL || '').replace(/\/$/, '');
+
 // ── HMAC SIGNATURE HELPER ─────────────────────────────────────────────
 function verifySignature(req) {
   if (process.env.STRICT_SIG !== 'true') return true;
-
   const { partner_id, timestamp, sign } = req.query;
   if (!partner_id || !timestamp || !sign) return false;
   if (String(partner_id) !== String(PARTNER_ID)) return false;
-
   const path      = req.path;
-  const shopId    = req.query.shop_id    || '';
+  const shopId    = req.query.shop_id     || '';
   const accessTok = req.query.access_token || '';
   const base      = `${PARTNER_ID}${path}${timestamp}${accessTok}${shopId}`;
   const expected  = crypto.createHmac('sha256', PARTNER_KEY).update(base).digest('hex');
@@ -55,89 +57,124 @@ function requireAuth(req, res, next) {
   next();
 }
 
-function rid() {
-  return 'mock_' + Math.random().toString(36).slice(2, 10).toUpperCase();
-}
+function rid() { return 'mock_' + Math.random().toString(36).slice(2, 10).toUpperCase(); }
+function ts()  { return Math.floor(Date.now() / 1000); }
 
-function ts() { return Math.floor(Date.now() / 1000); }
+// ── ODOO CALLBACK URL RESOLVER ────────────────────────────────────────
+// Odoo's Shopee connector expects the auth code to be delivered to one
+// of these known callback paths. We try to derive the Odoo base URL
+// from (in order of preference):
+//   1. ODOO_BASE_URL env var (most reliable — set this)
+//   2. The Referer header on the incoming request
+//   3. A fallback that just resolves back to ourselves (breaks the flow
+//      but avoids a crash)
+function resolveOdooCallback(req, extraParams) {
+  // Known Odoo Shopee OAuth callback paths (try in order)
+  const ODOO_CALLBACK_PATHS = [
+    '/web/action/shopee_connector.action_shopee_auth_callback',
+    '/shopee/auth/callback',
+    '/shopee/callback',
+    '/web#action=shopee',
+  ];
+
+  let odooBase = ODOO_BASE_URL;
+
+  if (!odooBase) {
+    // Try to derive from Referer header
+    const referer = req.get('Referer') || req.get('Origin') || '';
+    if (referer) {
+      try {
+        const u = new URL(referer);
+        odooBase = `${u.protocol}//${u.host}`;
+      } catch (_) {}
+    }
+  }
+
+  if (!odooBase) {
+    // Last resort: log a warning and return self-callback
+    console.warn('[AUTH] ODOO_BASE_URL not set and no Referer header — cannot redirect to Odoo.');
+    console.warn('[AUTH] Set the ODOO_BASE_URL environment variable to your Odoo instance URL.');
+    const self = `${req.protocol}://${req.get('host')}`;
+    const qs   = new URLSearchParams({ ...extraParams }).toString();
+    return `${self}/api/v2/auth/callback?${qs}`;
+  }
+
+  const qs = new URLSearchParams({ ...extraParams }).toString();
+  return `${odooBase}${ODOO_CALLBACK_PATHS[0]}?${qs}`;
+}
 
 // ── IN-MEMORY DATA STORE ──────────────────────────────────────────────
 const DB = {
   shop: {
-    shop_id:       123456,
-    shop_name:     'Demo Shopee Store PH',
-    region:        'PH',
-    status:        'NORMAL',
-    is_cb:         false,
-    auth_time:     ts(),
-    expire_time:   ts() + 86400 * 30,
-    description:   'Mock Shopee shop for Odoo demo integration.',
+    shop_id:     123456,
+    shop_name:   'Demo Shopee Store PH',
+    region:      'PH',
+    status:      'NORMAL',
+    is_cb:       false,
+    auth_time:   ts(),
+    expire_time: ts() + 86400 * 30,
+    description: 'Mock Shopee shop for Odoo demo integration.',
   },
 
   products: [
-    { item_id: 10001, name: "Lay's Classic Salted Chips 60g", description: "Snacks / Chips — Lay's Classic Salted Chips 60g", category_id: 100, price: 62, stock: 100, sku: 'LAYS-001', barcode: '4800888101001', status: 'NORMAL' },
-    { item_id: 10002, name: "Lay's Cheese & Onion Chips 60g", description: "Snacks / Chips — Lay's Cheese & Onion Chips 60g", category_id: 100, price: 62, stock: 100, sku: 'LAYS-002', barcode: '4800888101002', status: 'NORMAL' },
-    { item_id: 10003, name: "Lay's BBQ Chips 60g", description: "Snacks / Chips — Lay's BBQ Chips 60g", category_id: 100, price: 62, stock: 100, sku: 'LAYS-003', barcode: '4800888101003', status: 'NORMAL' },
-    { item_id: 10004, name: "Lay's Sour Cream & Onion 85g", description: "Snacks / Chips — Lay's Sour Cream & Onion 85g", category_id: 100, price: 89, stock: 100, sku: 'LAYS-004', barcode: '4800888101004', status: 'NORMAL' },
-    { item_id: 10005, name: "Cheetos Crunchy 80g", description: "Snacks / Chips — Cheetos Crunchy 80g", category_id: 100, price: 62, stock: 100, sku: 'CHTO-001', barcode: '4800888102001', status: 'NORMAL' },
-    { item_id: 10006, name: "Cheetos Puffs 80g", description: "Snacks / Chips — Cheetos Puffs 80g", category_id: 100, price: 62, stock: 100, sku: 'CHTO-002', barcode: '4800888102002', status: 'NORMAL' },
-    { item_id: 10007, name: "Cheetos Flamin' Hot 80g", description: "Snacks / Chips — Cheetos Flamin' Hot 80g", category_id: 100, price: 62, stock: 100, sku: 'CHTO-003', barcode: '4800888102003', status: 'NORMAL' },
-    { item_id: 10008, name: "Doritos Nacho Cheese 100g", description: "Snacks / Chips — Doritos Nacho Cheese 100g", category_id: 100, price: 75, stock: 100, sku: 'DORI-001', barcode: '4800888103001', status: 'NORMAL' },
-    { item_id: 10009, name: "Doritos Cool Ranch 100g", description: "Snacks / Chips — Doritos Cool Ranch 100g", category_id: 100, price: 75, stock: 100, sku: 'DORI-002', barcode: '4800888103002', status: 'NORMAL' },
-    { item_id: 10010, name: "Doritos Spicy Sweet Chili 100g", description: "Snacks / Chips — Doritos Spicy Sweet Chili 100g", category_id: 100, price: 75, stock: 100, sku: 'DORI-003', barcode: '4800888103003', status: 'NORMAL' },
-    { item_id: 10011, name: "Quaker Oats 800g", description: "Breakfast / Cereals — Quaker Oats 800g", category_id: 200, price: 149, stock: 100, sku: 'QKRO-001', barcode: '4800888104001', status: 'NORMAL' },
-    { item_id: 10012, name: "Quaker Instant Oatmeal Sachet 40g", description: "Breakfast / Cereals — Quaker Instant Oatmeal Sachet 40g", category_id: 200, price: 35, stock: 100, sku: 'QKRO-002', barcode: '4800888104002', status: 'NORMAL' },
-    { item_id: 10013, name: "Quaker Oats Granola Honey 400g", description: "Breakfast / Cereals — Quaker Oats Granola Honey 400g", category_id: 200, price: 189, stock: 100, sku: 'QKRO-003', barcode: '4800888104003', status: 'NORMAL' },
-    { item_id: 10014, name: "Quaker Chewy Granola Bar Choc Chip 42g", description: "Snacks / Bars — Quaker Chewy Granola Bar Choc Chip 42g", category_id: 101, price: 45, stock: 100, sku: 'QKRO-004', barcode: '4800888104004', status: 'NORMAL' },
-    { item_id: 10015, name: "M&M's Milk Chocolate 100g", description: "Confectionery / Chocolate — M&M's Milk Chocolate 100g", category_id: 300, price: 129, stock: 100, sku: 'MNMS-001', barcode: '4800888105001', status: 'NORMAL' },
-    { item_id: 10016, name: "M&M's Peanut 100g", description: "Confectionery / Chocolate — M&M's Peanut 100g", category_id: 300, price: 129, stock: 100, sku: 'MNMS-002', barcode: '4800888105002', status: 'NORMAL' },
-    { item_id: 10017, name: "M&M's Crispy 100g", description: "Confectionery / Chocolate — M&M's Crispy 100g", category_id: 300, price: 129, stock: 100, sku: 'MNMS-003', barcode: '4800888105003', status: 'NORMAL' },
-    { item_id: 10018, name: "Snickers Bar 52g", description: "Confectionery / Chocolate — Snickers Bar 52g", category_id: 300, price: 45, stock: 100, sku: 'SNIC-001', barcode: '4800888106001', status: 'NORMAL' },
-    { item_id: 10019, name: "Snickers Peanut Butter Bar 52g", description: "Confectionery / Chocolate — Snickers Peanut Butter Bar 52g", category_id: 300, price: 49, stock: 100, sku: 'SNIC-002', barcode: '4800888106002', status: 'NORMAL' },
-    { item_id: 10020, name: "Snickers Miniatures 240g", description: "Confectionery / Chocolate — Snickers Miniatures 240g", category_id: 300, price: 249, stock: 100, sku: 'SNIC-003', barcode: '4800888106003', status: 'NORMAL' },
-    { item_id: 10021, name: "Nutella Hazelnut Spread 350g", description: "Spreads / Condiments — Nutella Hazelnut Spread 350g", category_id: 400, price: 259, stock: 100, sku: 'NUTE-001', barcode: '4800888107001', status: 'NORMAL' },
-    { item_id: 10022, name: "Nutella Hazelnut Spread 750g", description: "Spreads / Condiments — Nutella Hazelnut Spread 750g", category_id: 400, price: 499, stock: 100, sku: 'NUTE-002', barcode: '4800888107002', status: 'NORMAL' },
-    { item_id: 10023, name: "Nutella & Go Snack Pack 48g", description: "Snacks / Bars — Nutella & Go Snack Pack 48g", category_id: 101, price: 65, stock: 100, sku: 'NUTE-003', barcode: '4800888107003', status: 'NORMAL' },
-    { item_id: 10024, name: "Tic Tac Orange 16g", description: "Confectionery / Candy — Tic Tac Orange 16g", category_id: 301, price: 25, stock: 100, sku: 'TICT-001', barcode: '4800888108001', status: 'NORMAL' },
-    { item_id: 10025, name: "Tic Tac Mint 16g", description: "Confectionery / Candy — Tic Tac Mint 16g", category_id: 301, price: 25, stock: 100, sku: 'TICT-002', barcode: '4800888108002', status: 'NORMAL' },
-    { item_id: 10026, name: "Tic Tac Strawberry 16g", description: "Confectionery / Candy — Tic Tac Strawberry 16g", category_id: 301, price: 25, stock: 100, sku: 'TICT-003', barcode: '4800888108003', status: 'NORMAL' },
-    { item_id: 10027, name: "Tic Tac Lime & Orange Mix 16g", description: "Confectionery / Candy — Tic Tac Lime & Orange Mix 16g", category_id: 301, price: 25, stock: 100, sku: 'TICT-004', barcode: '4800888108004', status: 'NORMAL' },
-    { item_id: 10028, name: "Loacker Classic Vanilla 175g", description: "Snacks / Biscuits — Loacker Classic Vanilla 175g", category_id: 102, price: 135, stock: 100, sku: 'LOAC-001', barcode: '4800888109001', status: 'NORMAL' },
-    { item_id: 10029, name: "Loacker Chocolate Wafer 175g", description: "Snacks / Biscuits — Loacker Chocolate Wafer 175g", category_id: 102, price: 135, stock: 100, sku: 'LOAC-002', barcode: '4800888109002', status: 'NORMAL' },
-    { item_id: 10030, name: "Loacker Hazelnut Wafer 175g", description: "Snacks / Biscuits — Loacker Hazelnut Wafer 175g", category_id: 102, price: 135, stock: 100, sku: 'LOAC-003', barcode: '4800888109003', status: 'NORMAL' },
-    { item_id: 10031, name: "Pedigree Adult Dry Dog Food 3kg", description: "Pet Food / Dog — Pedigree Adult Dry Dog Food 3kg", category_id: 700, price: 399, stock: 100, sku: 'PEDI-001', barcode: '4800888110001', status: 'NORMAL' },
-    { item_id: 10032, name: "Pedigree Puppy Dry Dog Food 1.5kg", description: "Pet Food / Dog — Pedigree Puppy Dry Dog Food 1.5kg", category_id: 700, price: 249, stock: 100, sku: 'PEDI-002', barcode: '4800888110002', status: 'NORMAL' },
-    { item_id: 10033, name: "Pedigree Wet Dog Food Beef 130g", description: "Pet Food / Dog — Pedigree Wet Dog Food Beef 130g", category_id: 700, price: 45, stock: 100, sku: 'PEDI-003', barcode: '4800888110003', status: 'NORMAL' },
-    { item_id: 10034, name: "Pedigree DentaStix Daily Oral Care 7s", description: "Pet Food / Dog — Pedigree DentaStix Daily Oral Care 7s", category_id: 700, price: 119, stock: 100, sku: 'PEDI-004', barcode: '4800888110004', status: 'NORMAL' },
-    { item_id: 10035, name: "Ferrero Rocher 3pcs Box", description: "Confectionery / Chocolate — Ferrero Rocher 3pcs Box", category_id: 300, price: 89, stock: 100, sku: 'FERR-001', barcode: '4800888111001', status: 'NORMAL' },
-    { item_id: 10036, name: "Ferrero Rocher 16pcs Box 200g", description: "Confectionery / Chocolate — Ferrero Rocher 16pcs Box 200g", category_id: 300, price: 419, stock: 100, sku: 'FERR-002', barcode: '4800888111002', status: 'NORMAL' },
-    { item_id: 10037, name: "Ferrero Rocher 24pcs Box 300g", description: "Confectionery / Chocolate — Ferrero Rocher 24pcs Box 300g", category_id: 300, price: 599, stock: 100, sku: 'FERR-003', barcode: '4800888111003', status: 'NORMAL' },
-    { item_id: 10038, name: "Swiss Miss Hot Cocoa Mix 28g Sachet", description: "Beverages / Hot Drinks — Swiss Miss Hot Cocoa Mix 28g Sachet", category_id: 500, price: 29, stock: 100, sku: 'SWMS-001', barcode: '4800888112001', status: 'NORMAL' },
-    { item_id: 10039, name: "Swiss Miss Milk Chocolate Mix 10s", description: "Beverages / Hot Drinks — Swiss Miss Milk Chocolate Mix 10s", category_id: 500, price: 259, stock: 100, sku: 'SWMS-002', barcode: '4800888112002', status: 'NORMAL' },
-    { item_id: 10040, name: "Swiss Miss Dark Chocolate Mix 10s", description: "Beverages / Hot Drinks — Swiss Miss Dark Chocolate Mix 10s", category_id: 500, price: 275, stock: 100, sku: 'SWMS-003', barcode: '4800888112003', status: 'NORMAL' },
-    { item_id: 10041, name: "Dole Pineapple Juice 240ml Can", description: "Beverages / Juice — Dole Pineapple Juice 240ml Can", category_id: 501, price: 35, stock: 100, sku: 'DOLE-001', barcode: '4800888113001', status: 'NORMAL' },
-    { item_id: 10042, name: "Dole Pineapple Chunks in Juice 227g", description: "Food / Canned Fruit — Dole Pineapple Chunks in Juice 227g", category_id: 600, price: 69, stock: 100, sku: 'DOLE-002', barcode: '4800888113002', status: 'NORMAL' },
-    { item_id: 10043, name: "Dole Tropical Fruit Salad 227g", description: "Food / Canned Fruit — Dole Tropical Fruit Salad 227g", category_id: 600, price: 79, stock: 100, sku: 'DOLE-003', barcode: '4800888113003', status: 'NORMAL' },
-    { item_id: 10044, name: "Dole Crushed Pineapple 227g", description: "Food / Canned Fruit — Dole Crushed Pineapple 227g", category_id: 600, price: 65, stock: 100, sku: 'DOLE-004', barcode: '4800888113004', status: 'NORMAL' },
-    { item_id: 10045, name: "Reynolds Wrap Aluminum Foil 37.2 sqft", description: "Household / Kitchen — Reynolds Wrap Aluminum Foil 37.2 sqft", category_id: 800, price: 149, stock: 100, sku: 'REYN-001', barcode: '4800888114001', status: 'NORMAL' },
-    { item_id: 10046, name: "Reynolds Wrap Heavy Duty Foil 50 sqft", description: "Household / Kitchen — Reynolds Wrap Heavy Duty Foil 50 sqft", category_id: 800, price: 199, stock: 100, sku: 'REYN-002', barcode: '4800888114002', status: 'NORMAL' },
+    { item_id: 10001, name: "Lay's Classic Salted Chips 60g",         description: "Snacks / Chips — Lay's Classic Salted Chips 60g",         category_id: 100, price: 62,  stock: 100, sku: 'LAYS-001', barcode: '4800888101001', status: 'NORMAL' },
+    { item_id: 10002, name: "Lay's Cheese & Onion Chips 60g",         description: "Snacks / Chips — Lay's Cheese & Onion Chips 60g",         category_id: 100, price: 62,  stock: 100, sku: 'LAYS-002', barcode: '4800888101002', status: 'NORMAL' },
+    { item_id: 10003, name: "Lay's BBQ Chips 60g",                    description: "Snacks / Chips — Lay's BBQ Chips 60g",                    category_id: 100, price: 62,  stock: 100, sku: 'LAYS-003', barcode: '4800888101003', status: 'NORMAL' },
+    { item_id: 10004, name: "Lay's Sour Cream & Onion 85g",           description: "Snacks / Chips — Lay's Sour Cream & Onion 85g",           category_id: 100, price: 89,  stock: 100, sku: 'LAYS-004', barcode: '4800888101004', status: 'NORMAL' },
+    { item_id: 10005, name: "Cheetos Crunchy 80g",                    description: "Snacks / Chips — Cheetos Crunchy 80g",                    category_id: 100, price: 62,  stock: 100, sku: 'CHTO-001', barcode: '4800888102001', status: 'NORMAL' },
+    { item_id: 10006, name: "Cheetos Puffs 80g",                      description: "Snacks / Chips — Cheetos Puffs 80g",                      category_id: 100, price: 62,  stock: 100, sku: 'CHTO-002', barcode: '4800888102002', status: 'NORMAL' },
+    { item_id: 10007, name: "Cheetos Flamin' Hot 80g",                description: "Snacks / Chips — Cheetos Flamin' Hot 80g",                category_id: 100, price: 62,  stock: 100, sku: 'CHTO-003', barcode: '4800888102003', status: 'NORMAL' },
+    { item_id: 10008, name: "Doritos Nacho Cheese 100g",              description: "Snacks / Chips — Doritos Nacho Cheese 100g",              category_id: 100, price: 75,  stock: 100, sku: 'DORI-001', barcode: '4800888103001', status: 'NORMAL' },
+    { item_id: 10009, name: "Doritos Cool Ranch 100g",                description: "Snacks / Chips — Doritos Cool Ranch 100g",                category_id: 100, price: 75,  stock: 100, sku: 'DORI-002', barcode: '4800888103002', status: 'NORMAL' },
+    { item_id: 10010, name: "Doritos Spicy Sweet Chili 100g",         description: "Snacks / Chips — Doritos Spicy Sweet Chili 100g",         category_id: 100, price: 75,  stock: 100, sku: 'DORI-003', barcode: '4800888103003', status: 'NORMAL' },
+    { item_id: 10011, name: "Quaker Oats 800g",                       description: "Breakfast / Cereals — Quaker Oats 800g",                  category_id: 200, price: 149, stock: 100, sku: 'QKRO-001', barcode: '4800888104001', status: 'NORMAL' },
+    { item_id: 10012, name: "Quaker Instant Oatmeal Sachet 40g",      description: "Breakfast / Cereals — Quaker Instant Oatmeal Sachet 40g", category_id: 200, price: 35,  stock: 100, sku: 'QKRO-002', barcode: '4800888104002', status: 'NORMAL' },
+    { item_id: 10013, name: "Quaker Oats Granola Honey 400g",         description: "Breakfast / Cereals — Quaker Oats Granola Honey 400g",    category_id: 200, price: 189, stock: 100, sku: 'QKRO-003', barcode: '4800888104003', status: 'NORMAL' },
+    { item_id: 10014, name: "Quaker Chewy Granola Bar Choc Chip 42g", description: "Snacks / Bars — Quaker Chewy Granola Bar Choc Chip 42g",  category_id: 101, price: 45,  stock: 100, sku: 'QKRO-004', barcode: '4800888104004', status: 'NORMAL' },
+    { item_id: 10015, name: "M&M's Milk Chocolate 100g",              description: "Confectionery / Chocolate — M&M's Milk Chocolate 100g",   category_id: 300, price: 129, stock: 100, sku: 'MNMS-001', barcode: '4800888105001', status: 'NORMAL' },
+    { item_id: 10016, name: "M&M's Peanut 100g",                      description: "Confectionery / Chocolate — M&M's Peanut 100g",           category_id: 300, price: 129, stock: 100, sku: 'MNMS-002', barcode: '4800888105002', status: 'NORMAL' },
+    { item_id: 10017, name: "M&M's Crispy 100g",                      description: "Confectionery / Chocolate — M&M's Crispy 100g",           category_id: 300, price: 129, stock: 100, sku: 'MNMS-003', barcode: '4800888105003', status: 'NORMAL' },
+    { item_id: 10018, name: "Snickers Bar 52g",                       description: "Confectionery / Chocolate — Snickers Bar 52g",             category_id: 300, price: 45,  stock: 100, sku: 'SNIC-001', barcode: '4800888106001', status: 'NORMAL' },
+    { item_id: 10019, name: "Snickers Peanut Butter Bar 52g",         description: "Confectionery / Chocolate — Snickers Peanut Butter Bar 52g", category_id: 300, price: 49, stock: 100, sku: 'SNIC-002', barcode: '4800888106002', status: 'NORMAL' },
+    { item_id: 10020, name: "Snickers Miniatures 240g",               description: "Confectionery / Chocolate — Snickers Miniatures 240g",    category_id: 300, price: 249, stock: 100, sku: 'SNIC-003', barcode: '4800888106003', status: 'NORMAL' },
+    { item_id: 10021, name: "Nutella Hazelnut Spread 350g",           description: "Spreads / Condiments — Nutella Hazelnut Spread 350g",     category_id: 400, price: 259, stock: 100, sku: 'NUTE-001', barcode: '4800888107001', status: 'NORMAL' },
+    { item_id: 10022, name: "Nutella Hazelnut Spread 750g",           description: "Spreads / Condiments — Nutella Hazelnut Spread 750g",     category_id: 400, price: 499, stock: 100, sku: 'NUTE-002', barcode: '4800888107002', status: 'NORMAL' },
+    { item_id: 10023, name: "Nutella & Go Snack Pack 48g",            description: "Snacks / Bars — Nutella & Go Snack Pack 48g",             category_id: 101, price: 65,  stock: 100, sku: 'NUTE-003', barcode: '4800888107003', status: 'NORMAL' },
+    { item_id: 10024, name: "Tic Tac Orange 16g",                     description: "Confectionery / Candy — Tic Tac Orange 16g",              category_id: 301, price: 25,  stock: 100, sku: 'TICT-001', barcode: '4800888108001', status: 'NORMAL' },
+    { item_id: 10025, name: "Tic Tac Mint 16g",                       description: "Confectionery / Candy — Tic Tac Mint 16g",                category_id: 301, price: 25,  stock: 100, sku: 'TICT-002', barcode: '4800888108002', status: 'NORMAL' },
+    { item_id: 10026, name: "Tic Tac Strawberry 16g",                 description: "Confectionery / Candy — Tic Tac Strawberry 16g",          category_id: 301, price: 25,  stock: 100, sku: 'TICT-003', barcode: '4800888108003', status: 'NORMAL' },
+    { item_id: 10027, name: "Tic Tac Lime & Orange Mix 16g",          description: "Confectionery / Candy — Tic Tac Lime & Orange Mix 16g",   category_id: 301, price: 25,  stock: 100, sku: 'TICT-004', barcode: '4800888108004', status: 'NORMAL' },
+    { item_id: 10028, name: "Loacker Classic Vanilla 175g",           description: "Snacks / Biscuits — Loacker Classic Vanilla 175g",        category_id: 102, price: 135, stock: 100, sku: 'LOAC-001', barcode: '4800888109001', status: 'NORMAL' },
+    { item_id: 10029, name: "Loacker Chocolate Wafer 175g",           description: "Snacks / Biscuits — Loacker Chocolate Wafer 175g",        category_id: 102, price: 135, stock: 100, sku: 'LOAC-002', barcode: '4800888109002', status: 'NORMAL' },
+    { item_id: 10030, name: "Loacker Hazelnut Wafer 175g",            description: "Snacks / Biscuits — Loacker Hazelnut Wafer 175g",         category_id: 102, price: 135, stock: 100, sku: 'LOAC-003', barcode: '4800888109003', status: 'NORMAL' },
+    { item_id: 10031, name: "Pedigree Adult Dry Dog Food 3kg",        description: "Pet Food / Dog — Pedigree Adult Dry Dog Food 3kg",        category_id: 700, price: 399, stock: 100, sku: 'PEDI-001', barcode: '4800888110001', status: 'NORMAL' },
+    { item_id: 10032, name: "Pedigree Puppy Dry Dog Food 1.5kg",      description: "Pet Food / Dog — Pedigree Puppy Dry Dog Food 1.5kg",      category_id: 700, price: 249, stock: 100, sku: 'PEDI-002', barcode: '4800888110002', status: 'NORMAL' },
+    { item_id: 10033, name: "Pedigree Wet Dog Food Beef 130g",        description: "Pet Food / Dog — Pedigree Wet Dog Food Beef 130g",        category_id: 700, price: 45,  stock: 100, sku: 'PEDI-003', barcode: '4800888110003', status: 'NORMAL' },
+    { item_id: 10034, name: "Pedigree DentaStix Daily Oral Care 7s",  description: "Pet Food / Dog — Pedigree DentaStix Daily Oral Care 7s",  category_id: 700, price: 119, stock: 100, sku: 'PEDI-004', barcode: '4800888110004', status: 'NORMAL' },
+    { item_id: 10035, name: "Ferrero Rocher 3pcs Box",                description: "Confectionery / Chocolate — Ferrero Rocher 3pcs Box",     category_id: 300, price: 89,  stock: 100, sku: 'FERR-001', barcode: '4800888111001', status: 'NORMAL' },
+    { item_id: 10036, name: "Ferrero Rocher 16pcs Box 200g",          description: "Confectionery / Chocolate — Ferrero Rocher 16pcs Box 200g", category_id: 300, price: 419, stock: 100, sku: 'FERR-002', barcode: '4800888111002', status: 'NORMAL' },
+    { item_id: 10037, name: "Ferrero Rocher 24pcs Box 300g",          description: "Confectionery / Chocolate — Ferrero Rocher 24pcs Box 300g", category_id: 300, price: 599, stock: 100, sku: 'FERR-003', barcode: '4800888111003', status: 'NORMAL' },
+    { item_id: 10038, name: "Swiss Miss Hot Cocoa Mix 28g Sachet",    description: "Beverages / Hot Drinks — Swiss Miss Hot Cocoa Mix 28g Sachet", category_id: 500, price: 29, stock: 100, sku: 'SWMS-001', barcode: '4800888112001', status: 'NORMAL' },
+    { item_id: 10039, name: "Swiss Miss Milk Chocolate Mix 10s",      description: "Beverages / Hot Drinks — Swiss Miss Milk Chocolate Mix 10s", category_id: 500, price: 259, stock: 100, sku: 'SWMS-002', barcode: '4800888112002', status: 'NORMAL' },
+    { item_id: 10040, name: "Swiss Miss Dark Chocolate Mix 10s",      description: "Beverages / Hot Drinks — Swiss Miss Dark Chocolate Mix 10s", category_id: 500, price: 275, stock: 100, sku: 'SWMS-003', barcode: '4800888112003', status: 'NORMAL' },
+    { item_id: 10041, name: "Dole Pineapple Juice 240ml Can",         description: "Beverages / Juice — Dole Pineapple Juice 240ml Can",       category_id: 501, price: 35,  stock: 100, sku: 'DOLE-001', barcode: '4800888113001', status: 'NORMAL' },
+    { item_id: 10042, name: "Dole Pineapple Chunks in Juice 227g",    description: "Food / Canned Fruit — Dole Pineapple Chunks in Juice 227g", category_id: 600, price: 69, stock: 100, sku: 'DOLE-002', barcode: '4800888113002', status: 'NORMAL' },
+    { item_id: 10043, name: "Dole Tropical Fruit Salad 227g",         description: "Food / Canned Fruit — Dole Tropical Fruit Salad 227g",     category_id: 600, price: 79,  stock: 100, sku: 'DOLE-003', barcode: '4800888113003', status: 'NORMAL' },
+    { item_id: 10044, name: "Dole Crushed Pineapple 227g",            description: "Food / Canned Fruit — Dole Crushed Pineapple 227g",        category_id: 600, price: 65,  stock: 100, sku: 'DOLE-004', barcode: '4800888113004', status: 'NORMAL' },
+    { item_id: 10045, name: "Reynolds Wrap Aluminum Foil 37.2 sqft",  description: "Household / Kitchen — Reynolds Wrap Aluminum Foil 37.2 sqft", category_id: 800, price: 149, stock: 100, sku: 'REYN-001', barcode: '4800888114001', status: 'NORMAL' },
+    { item_id: 10046, name: "Reynolds Wrap Heavy Duty Foil 50 sqft",  description: "Household / Kitchen — Reynolds Wrap Heavy Duty Foil 50 sqft", category_id: 800, price: 199, stock: 100, sku: 'REYN-002', barcode: '4800888114002', status: 'NORMAL' },
     { item_id: 10047, name: "Reynolds Kitchens Parchment Paper 30sqft", description: "Household / Kitchen — Reynolds Kitchens Parchment Paper 30sqft", category_id: 800, price: 129, stock: 100, sku: 'REYN-003', barcode: '4800888114003', status: 'NORMAL' },
-    { item_id: 10048, name: "Reynolds Oven Bags Turkey Size 2s", description: "Household / Kitchen — Reynolds Oven Bags Turkey Size 2s", category_id: 800, price: 119, stock: 100, sku: 'REYN-004', barcode: '4800888114004', status: 'NORMAL' },
-    { item_id: 10049, name: "Reynolds Wrap Non-Stick Foil 35 sqft", description: "Household / Kitchen — Reynolds Wrap Non-Stick Foil 35 sqft", category_id: 800, price: 169, stock: 100, sku: 'REYN-005', barcode: '4800888114005', status: 'NORMAL' },
-    { item_id: 10050, name: "Reynolds Cut-Rite Wax Paper 75 sqft", description: "Household / Kitchen — Reynolds Cut-Rite Wax Paper 75 sqft", category_id: 800, price: 109, stock: 100, sku: 'REYN-006', barcode: '4800888114006', status: 'NORMAL' }
+    { item_id: 10048, name: "Reynolds Oven Bags Turkey Size 2s",      description: "Household / Kitchen — Reynolds Oven Bags Turkey Size 2s",  category_id: 800, price: 119, stock: 100, sku: 'REYN-004', barcode: '4800888114004', status: 'NORMAL' },
+    { item_id: 10049, name: "Reynolds Wrap Non-Stick Foil 35 sqft",   description: "Household / Kitchen — Reynolds Wrap Non-Stick Foil 35 sqft", category_id: 800, price: 169, stock: 100, sku: 'REYN-005', barcode: '4800888114005', status: 'NORMAL' },
+    { item_id: 10050, name: "Reynolds Cut-Rite Wax Paper 75 sqft",    description: "Household / Kitchen — Reynolds Cut-Rite Wax Paper 75 sqft", category_id: 800, price: 109, stock: 100, sku: 'REYN-006', barcode: '4800888114006', status: 'NORMAL' },
   ],
 
   orders: [
     {
-      order_sn:       'SPX20260521001',
-      order_status:   'READY_TO_SHIP',
-      create_time:    ts() - 3600,
-      update_time:    ts() - 1800,
-      buyer_username: 'juan_delacruz',
-      recipient_name: 'Juan Dela Cruz',
-      actual_price:   515,
-      currency:       'PHP',
-      tracking_no:    '',
+      order_sn: 'SPX20260521001', order_status: 'READY_TO_SHIP',
+      create_time: ts() - 3600, update_time: ts() - 1800,
+      buyer_username: 'juan_delacruz', recipient_name: 'Juan Dela Cruz',
+      actual_price: 515, currency: 'PHP', tracking_no: '',
       item_list: [
         { item_id: 10001, item_name: "Lay's Classic Salted Chips 60g", model_sku: 'LAYS-001', model_quantity_purchased: 3, model_discounted_price: 62 },
         { item_id: 10008, item_name: "Doritos Nacho Cheese 100g",      model_sku: 'DORI-001', model_quantity_purchased: 2, model_discounted_price: 75 },
@@ -145,15 +182,10 @@ const DB = {
       ],
     },
     {
-      order_sn:       'SPX20260521002',
-      order_status:   'SHIPPED',
-      create_time:    ts() - 86400,
-      update_time:    ts() - 43200,
-      buyer_username: 'maria_santos',
-      recipient_name: 'Maria Santos',
-      actual_price:   874,
-      currency:       'PHP',
-      tracking_no:    'PHSPX1234567890',
+      order_sn: 'SPX20260521002', order_status: 'SHIPPED',
+      create_time: ts() - 86400, update_time: ts() - 43200,
+      buyer_username: 'maria_santos', recipient_name: 'Maria Santos',
+      actual_price: 874, currency: 'PHP', tracking_no: 'PHSPX1234567890',
       item_list: [
         { item_id: 10021, item_name: "Nutella Hazelnut Spread 350g", model_sku: 'NUTE-001', model_quantity_purchased: 2, model_discounted_price: 259 },
         { item_id: 10035, item_name: "Ferrero Rocher 3pcs Box",      model_sku: 'FERR-001', model_quantity_purchased: 4, model_discounted_price: 89 },
@@ -226,6 +258,7 @@ tr:hover td{background:#fafafa}
 .auth-label{font-size:11px;color:#888;margin-bottom:5px}
 .empty{color:#bbb;text-align:center;padding:24px;font-size:12px}
 .mono{font-family:'SF Mono',monospace;font-size:11px}
+.warn{background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:10px 14px;font-size:12px;color:#92400e;margin-bottom:14px}
 </style>
 </head>
 <body>
@@ -236,6 +269,8 @@ tr:hover td{background:#fafafa}
 </div>
 
 <div class="container">
+
+  ${!ODOO_BASE_URL ? `<div class="warn">⚠️ <strong>ODOO_BASE_URL</strong> is not set. The OAuth callback cannot redirect to Odoo automatically. Set this environment variable to your Odoo instance URL (e.g. <code>https://mycompany.odoo.com</code>).</div>` : ''}
 
   <div class="banner" id="banner" style="display:none">
     <i class="ti ti-circle-check"></i>
@@ -298,7 +333,6 @@ function nowTime(){const d=new Date();return[d.getHours(),d.getMinutes(),d.getSe
 function addLog(msg,type){const log=document.getElementById('auth-log');const line=document.createElement('div');line.className='log-line';line.innerHTML='<span class="log-time">'+nowTime()+'</span><span class="log-'+type+'">'+msg+'</span>';log.appendChild(line);log.scrollTop=log.scrollHeight}
 function setProgress(pct,label){document.getElementById('auth-progress').style.width=pct+'%';document.getElementById('auth-label').textContent=label}
 function incApi(){document.getElementById('api-calls').textContent=++apiCalls}
-
 function startAuth(){
   const btn=document.getElementById('auth-btn');
   btn.disabled=true;btn.textContent='Authorizing...';
@@ -319,7 +353,6 @@ function startAuth(){
     loadProducts();syncOrders();
   },3400);
 }
-
 function syncOrders(){
   if(!authorized)return;incApi();
   const orders=[
@@ -337,7 +370,6 @@ function syncOrders(){
     document.getElementById('orders-count').textContent=++i;
   },300);
 }
-
 function loadProducts(){
   incApi();
   fetch('/api/v2/product/get_item_list?partner_id=1&shop_id=123456&access_token=demo&timestamp=9999999999&sign=demo&item_status=NORMAL&page_size=10')
@@ -362,26 +394,20 @@ function loadProducts(){
       },180);
     });
 }
-
-function deductStock(itemId, sku){
+function deductStock(itemId,sku){
   const el=document.getElementById('stock-'+itemId);
   if(!el)return;
   const current=parseInt(el.textContent)||0;
   const newStock=Math.max(0,current-1);
   fetch('/api/v2/product/update_stock?partner_id=1&shop_id=123456&access_token=demo&timestamp=9999999999&sign=demo',{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
+    method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({item_id:itemId,stock_list:[{model_id:0,normal_stock:newStock}]})
   }).then(()=>{
     el.textContent=newStock;
     el.style.color=newStock<=10?'#E65100':newStock<=30?'#f59e0b':'#16a34a';
     addLog('POST /api/v2/product/update_stock \u2192 '+sku+' stock: '+current+' \u2192 '+newStock+' (synced to Odoo)','ok');
     incApi();
-    if(newStock===0){
-      el.textContent='OUT OF STOCK';
-      el.style.color='#dc2626';
-      addLog('ALERT: '+sku+' is now out of stock \u2014 Shopee listing auto-paused','info');
-    }
+    if(newStock===0){el.textContent='OUT OF STOCK';el.style.color='#dc2626';addLog('ALERT: '+sku+' is now out of stock \u2014 Shopee listing auto-paused','info');}
   });
 }
 </script>
@@ -390,52 +416,77 @@ function deductStock(itemId, sku){
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  AUTH — auth_partner
+//  AUTH — auth_partner + get_auth_link
 //
-//  Odoo calls this to start the OAuth flow. Two modes:
-//  1. redirect_url present → redirect straight to Odoo's callback with
-//     code + shop_id, skipping any intermediate hop.
-//  2. redirect_url absent  → return a JSON auth_url pointing to this
-//     server's own callback so Odoo can open it in a browser tab.
+//  The Odoo Shopee connector calls one of these two endpoints to begin
+//  OAuth. It expects back a JSON response containing { auth_url }.
+//  Odoo then opens auth_url in the user's browser. When the user lands
+//  on that URL, the mock must redirect them to Odoo's own callback so
+//  Odoo can receive the code and shop_id.
+//
+//  Strategy:
+//    1. If redirect_url is in the query  → embed it directly in auth_url
+//       so the browser round-trip delivers code+shop_id straight to Odoo.
+//    2. If redirect_url is absent        → build auth_url pointing to our
+//       own /api/v2/auth/callback, which will redirect to ODOO_BASE_URL
+//       + known Odoo callback path when the browser hits it.
 // ─────────────────────────────────────────────────────────────────────
-app.get('/api/v2/shop/auth_partner', (req, res) => {
+function buildAuthUrl(req) {
   const { redirect_url } = req.query;
-  if (redirect_url) {
-    const sep = redirect_url.includes('?') ? '&' : '?';
-    return res.redirect(`${redirect_url}${sep}code=MOCK_AUTH_CODE_2026&shop_id=${DB.shop.shop_id}`);
-  }
-  // No redirect_url: return a self-contained auth URL Odoo can open
-  const auth_url = `${req.protocol}://${req.get('host')}/api/v2/auth/callback?code=MOCK_AUTH_CODE_2026&shop_id=${DB.shop.shop_id}`;
-  res.json({ error: '', message: '', request_id: rid(), response: { auth_url } });
-});
+  const params = { code: 'MOCK_AUTH_CODE_2026', shop_id: DB.shop.shop_id };
 
-// ─────────────────────────────────────────────────────────────────────
-//  AUTH — get_auth_link
-//
-//  Same dual-mode logic as auth_partner above.
-// ─────────────────────────────────────────────────────────────────────
-app.get('/api/v2/auth/shop/get_auth_link', (req, res) => {
-  const { redirect_url } = req.query;
   if (redirect_url) {
-    const sep      = redirect_url.includes('?') ? '&' : '?';
-    const auth_url = `${redirect_url}${sep}code=MOCK_AUTH_CODE_2026&shop_id=${DB.shop.shop_id}`;
+    // Odoo told us exactly where to send the browser — use it directly
+    const sep = redirect_url.includes('?') ? '&' : '?';
+    return `${redirect_url}${sep}${new URLSearchParams(params).toString()}`;
+  }
+
+  // No redirect_url supplied: build a URL to our own callback handler,
+  // which will forward to Odoo using ODOO_BASE_URL or Referer
+  const self = `${req.protocol}://${req.get('host')}`;
+  return `${self}/api/v2/auth/callback?${new URLSearchParams(params).toString()}`;
+}
+
+app.get('/api/v2/shop/auth_partner', (req, res) => {
+  console.log('[AUTH] auth_partner called — query:', req.query, '| headers.referer:', req.get('Referer'));
+  const auth_url = buildAuthUrl(req);
+  console.log('[AUTH] auth_url resolved to:', auth_url);
+  // Some connector versions expect a direct redirect; others parse JSON.
+  // Check Accept header: if it wants JSON, return JSON; otherwise redirect.
+  if (req.accepts('json') && !req.accepts('html')) {
     return res.json({ error: '', message: '', request_id: rid(), response: { auth_url } });
   }
-  // No redirect_url: return a self-contained auth URL Odoo can open
-  const auth_url = `${req.protocol}://${req.get('host')}/api/v2/auth/callback?code=MOCK_AUTH_CODE_2026&shop_id=${DB.shop.shop_id}`;
+  res.redirect(auth_url);
+});
+
+app.get('/api/v2/auth/shop/get_auth_link', (req, res) => {
+  console.log('[AUTH] get_auth_link called — query:', req.query, '| headers.referer:', req.get('Referer'));
+  const auth_url = buildAuthUrl(req);
+  console.log('[AUTH] auth_url resolved to:', auth_url);
   res.json({ error: '', message: '', request_id: rid(), response: { auth_url } });
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  AUTH — callback (fallback for when no redirect_url is provided)
+//  AUTH — callback
+//
+//  The browser lands here when Odoo didn't supply a redirect_url.
+//  We forward code+shop_id to Odoo's known callback path using
+//  ODOO_BASE_URL (env var) or fall back to the Referer header.
 // ─────────────────────────────────────────────────────────────────────
 app.get('/api/v2/auth/callback', (req, res) => {
-  const { redirect, code, shop_id } = req.query;
+  const { code, shop_id, redirect } = req.query;
+  console.log('[AUTH] callback hit — query:', req.query, '| headers.referer:', req.get('Referer'));
+
+  // 1. Explicit redirect param (legacy path)
   if (redirect) {
     const sep = redirect.includes('?') ? '&' : '?';
     return res.redirect(`${redirect}${sep}code=${code}&shop_id=${shop_id}`);
   }
-  res.json({ code, shop_id, message: 'Authorization complete.' });
+
+  // 2. Derive Odoo base from env or Referer
+  const destination = resolveOdooCallback(req, { code, shop_id });
+  console.log('[AUTH] redirecting browser to Odoo callback:', destination);
+  res.redirect(destination);
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -483,11 +534,9 @@ app.get('/api/v2/product/get_item_list', requireAuth, (req, res) => {
   const offset     = parseInt(req.query.offset)    || 0;
   const pageSize   = parseInt(req.query.page_size) || 50;
   const itemStatus = req.query.item_status          || 'NORMAL';
-
-  const filtered = DB.products.filter(p => p.status === itemStatus || itemStatus === 'ALL');
-  const page     = filtered.slice(offset, offset + pageSize);
-  const hasMore  = offset + pageSize < filtered.length;
-
+  const filtered   = DB.products.filter(p => p.status === itemStatus || itemStatus === 'ALL');
+  const page       = filtered.slice(offset, offset + pageSize);
+  const hasMore    = offset + pageSize < filtered.length;
   res.json({
     error: '', message: '', request_id: rid(),
     response: {
@@ -505,37 +554,17 @@ app.get('/api/v2/product/get_item_list', requireAuth, (req, res) => {
 app.get('/api/v2/product/get_item_base_info', requireAuth, (req, res) => {
   const raw   = req.query.item_id_list || '';
   const ids   = raw.split(',').map(Number).filter(Boolean);
-  const items = ids.length
-    ? DB.products.filter(p => ids.includes(p.item_id))
-    : DB.products;
-
+  const items = ids.length ? DB.products.filter(p => ids.includes(p.item_id)) : DB.products;
   res.json({
     error: '', message: '', request_id: rid(),
     response: {
       item_list: items.map(p => ({
-        item_id:     p.item_id,
-        item_name:   p.name,
-        description: p.description,
-        category_id: p.category_id,
-        item_status: p.status,
-        price_info: [{
-          currency:       'PHP',
-          original_price: p.price,
-          current_price:  p.price,
-          inflated_price_of_original_price: p.price,
-        }],
-        stock_info_v2: {
-          summary_info: {
-            total_reserved_stock:  0,
-            total_available_stock: p.stock,
-          }
-        },
+        item_id: p.item_id, item_name: p.name, description: p.description,
+        category_id: p.category_id, item_status: p.status,
+        price_info: [{ currency: 'PHP', original_price: p.price, current_price: p.price, inflated_price_of_original_price: p.price }],
+        stock_info_v2: { summary_info: { total_reserved_stock: 0, total_available_stock: p.stock } },
         sku: p.sku,
-        image: {
-          image_url_list: [
-            `https://placehold.co/400x400/EE4D2D/fff?text=${encodeURIComponent(p.sku)}`
-          ]
-        }
+        image: { image_url_list: [`https://placehold.co/400x400/EE4D2D/fff?text=${encodeURIComponent(p.sku)}`] }
       }))
     }
   });
@@ -548,21 +577,13 @@ app.get('/api/v2/order/get_order_list', requireAuth, (req, res) => {
   const timeFrom    = parseInt(req.query.time_range_field === 'update_time' ? req.query.update_time_from : req.query.create_time_from) || 0;
   const timeTo      = parseInt(req.query.time_range_field === 'update_time' ? req.query.update_time_to   : req.query.create_time_to)   || ts();
   const orderStatus = req.query.order_status;
-
   let orders = DB.orders.filter(o => o.create_time >= timeFrom && o.create_time <= timeTo);
   if (orderStatus) orders = orders.filter(o => o.order_status === orderStatus);
-
   res.json({
     error: '', message: '', request_id: rid(),
     response: {
-      order_list: orders.map(o => ({
-        order_sn:     o.order_sn,
-        order_status: o.order_status,
-        create_time:  o.create_time,
-        update_time:  o.update_time,
-      })),
-      more:        false,
-      next_cursor: '',
+      order_list: orders.map(o => ({ order_sn: o.order_sn, order_status: o.order_status, create_time: o.create_time, update_time: o.update_time })),
+      more: false, next_cursor: '',
     }
   });
 });
@@ -573,24 +594,16 @@ app.get('/api/v2/order/get_order_list', requireAuth, (req, res) => {
 app.get('/api/v2/order/get_order_detail', requireAuth, (req, res) => {
   const raw  = req.query.order_sn_list || '';
   const sns  = raw.split(',').map(s => s.trim()).filter(Boolean);
-  const list = sns.length
-    ? DB.orders.filter(o => sns.includes(o.order_sn))
-    : DB.orders;
-
+  const list = sns.length ? DB.orders.filter(o => sns.includes(o.order_sn)) : DB.orders;
   res.json({
     error: '', message: '', request_id: rid(),
     response: {
       order_list: list.map(o => ({
         ...o,
-        message_to_seller:         '',
-        note:                      '',
-        pay_time:                  o.create_time + 300,
-        days_to_ship:              3,
-        ship_by_date:              o.create_time + 86400 * 3,
-        invoice_data:              null,
-        checkout_shipping_carrier: 'SPX Express',
-        actual_shipping_cost:      0,
-        total_amount:              o.actual_price,
+        message_to_seller: '', note: '',
+        pay_time: o.create_time + 300, days_to_ship: 3, ship_by_date: o.create_time + 86400 * 3,
+        invoice_data: null, checkout_shipping_carrier: 'SPX Express',
+        actual_shipping_cost: 0, total_amount: o.actual_price,
       }))
     }
   });
@@ -605,19 +618,8 @@ app.get('/api/v2/logistics/get_shipping_parameter', requireAuth, (req, res) => {
     error: '', message: '', request_id: rid(),
     response: {
       order_sn,
-      pickup: {
-        address_list: [{
-          address_id: 1,
-          address:    '123 Mock Warehouse St, Manila, PH',
-          time_slot_list: [{
-            pickup_time_id: 'slot_001',
-            date:           new Date().toISOString().split('T')[0],
-            time_text:      '9:00 AM - 12:00 PM',
-          }]
-        }]
-      },
-      dropoff:        { branch_list: [] },
-      non_integrated: null,
+      pickup: { address_list: [{ address_id: 1, address: '123 Mock Warehouse St, Manila, PH', time_slot_list: [{ pickup_time_id: 'slot_001', date: new Date().toISOString().split('T')[0], time_text: '9:00 AM - 12:00 PM' }] }] },
+      dropoff: { branch_list: [] }, non_integrated: null,
     }
   });
 });
@@ -628,21 +630,14 @@ app.get('/api/v2/logistics/get_shipping_parameter', requireAuth, (req, res) => {
 app.post('/api/v2/logistics/ship_order', requireAuth, (req, res) => {
   const { order_sn } = req.body;
   const order = DB.orders.find(o => o.order_sn === order_sn);
-  if (!order) {
-    return res.json({ error: 'order_not_found', message: `Order ${order_sn} not found.`, request_id: rid(), response: {} });
-  }
-  const tracking     = 'PHSPX' + Date.now();
-  order.tracking_no  = tracking;
-  order.order_status = 'SHIPPED';
-  order.update_time  = ts();
+  if (!order) return res.json({ error: 'order_not_found', message: `Order ${order_sn} not found.`, request_id: rid(), response: {} });
+  const tracking = 'PHSPX' + Date.now();
+  order.tracking_no = tracking; order.order_status = 'SHIPPED'; order.update_time = ts();
   order.item_list.forEach(item => {
     const product = DB.products.find(p => p.item_id === item.item_id);
     if (product) product.stock = Math.max(0, product.stock - item.model_quantity_purchased);
   });
-  res.json({
-    error: '', message: '', request_id: rid(),
-    response: { hint_message: 'Shipment initiated successfully.' }
-  });
+  res.json({ error: '', message: '', request_id: rid(), response: { hint_message: 'Shipment initiated successfully.' } });
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -651,21 +646,10 @@ app.post('/api/v2/logistics/ship_order', requireAuth, (req, res) => {
 app.post('/api/v2/logistics/init_shipment', requireAuth, (req, res) => {
   const { order_sn } = req.body;
   const order = DB.orders.find(o => o.order_sn === order_sn);
-  if (!order) {
-    return res.json({ error: 'order_not_found', message: `Order ${order_sn} not found.`, request_id: rid(), response: {} });
-  }
-  const tracking     = 'PHSPX' + Date.now();
-  order.tracking_no  = tracking;
-  order.order_status = 'SHIPPED';
-  order.update_time  = ts();
-  res.json({
-    error: '', message: '', request_id: rid(),
-    response: {
-      order_sn,
-      tracking_number: tracking,
-      hint_message:    'Shipment initiated successfully.',
-    }
-  });
+  if (!order) return res.json({ error: 'order_not_found', message: `Order ${order_sn} not found.`, request_id: rid(), response: {} });
+  const tracking = 'PHSPX' + Date.now();
+  order.tracking_no = tracking; order.order_status = 'SHIPPED'; order.update_time = ts();
+  res.json({ error: '', message: '', request_id: rid(), response: { order_sn, tracking_number: tracking, hint_message: 'Shipment initiated successfully.' } });
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -675,10 +659,7 @@ app.get('/api/v2/logistics/get_tracking_number', requireAuth, (req, res) => {
   const { order_sn } = req.query;
   const order    = DB.orders.find(o => o.order_sn === order_sn);
   const tracking = order ? (order.tracking_no || 'PHSPX' + Date.now()) : 'PHSPX' + Date.now();
-  res.json({
-    error: '', message: '', request_id: rid(),
-    response: { tracking_number: tracking, plp_number: '', hint_message: '' }
-  });
+  res.json({ error: '', message: '', request_id: rid(), response: { tracking_number: tracking, plp_number: '', hint_message: '' } });
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -686,47 +667,23 @@ app.get('/api/v2/logistics/get_tracking_number', requireAuth, (req, res) => {
 // ─────────────────────────────────────────────────────────────────────
 app.post('/api/v2/logistics/create_shipping_document', requireAuth, (req, res) => {
   const { order_list } = req.body;
-  res.json({
-    error: '', message: '', request_id: rid(),
-    response: {
-      result_list: (order_list || []).map(o => ({
-        order_sn:     o.order_sn,
-        status:       'READY',
-        fail_error:   '',
-        fail_message: '',
-      }))
-    }
-  });
+  res.json({ error: '', message: '', request_id: rid(), response: { result_list: (order_list || []).map(o => ({ order_sn: o.order_sn, status: 'READY', fail_error: '', fail_message: '' })) } });
 });
 
 // ─────────────────────────────────────────────────────────────────────
 //  LOGISTICS — get_shipping_document_result
 // ─────────────────────────────────────────────────────────────────────
 app.get('/api/v2/logistics/get_shipping_document_result', requireAuth, (req, res) => {
-  const raw = req.query.order_list || '[]';
   let orders = [];
-  try { orders = JSON.parse(raw); } catch (e) {}
-  res.json({
-    error: '', message: '', request_id: rid(),
-    response: {
-      result_list: orders.map(o => ({
-        order_sn:     o.order_sn,
-        status:       'READY',
-        fail_error:   '',
-        fail_message: '',
-      }))
-    }
-  });
+  try { orders = JSON.parse(req.query.order_list || '[]'); } catch (e) {}
+  res.json({ error: '', message: '', request_id: rid(), response: { result_list: orders.map(o => ({ order_sn: o.order_sn, status: 'READY', fail_error: '', fail_message: '' })) } });
 });
 
 // ─────────────────────────────────────────────────────────────────────
 //  LOGISTICS — download_shipping_document
 // ─────────────────────────────────────────────────────────────────────
 app.post('/api/v2/logistics/download_shipping_document', requireAuth, (req, res) => {
-  res.json({
-    error: '', message: '', request_id: rid(),
-    response: { file_type: 'PDF', file_url: `${req.protocol}://${req.get('host')}/mock-label.pdf` }
-  });
+  res.json({ error: '', message: '', request_id: rid(), response: { file_type: 'PDF', file_url: `${req.protocol}://${req.get('host')}/mock-label.pdf` } });
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -735,18 +692,13 @@ app.post('/api/v2/logistics/download_shipping_document', requireAuth, (req, res)
 app.post('/api/v2/product/update_stock', requireAuth, (req, res) => {
   const { item_id, stock_list } = req.body;
   const product = DB.products.find(p => p.item_id === item_id);
-  if (!product) {
-    return res.json({ error: 'item_not_found', message: `Item ${item_id} not found.`, request_id: rid(), response: {} });
-  }
+  if (!product) return res.json({ error: 'item_not_found', message: `Item ${item_id} not found.`, request_id: rid(), response: {} });
   if (stock_list && stock_list[0]) {
     const newStock = stock_list[0].normal_stock;
     console.log(`[STOCK SYNC] ${product.sku} (${product.name}): ${product.stock} → ${newStock}`);
     product.stock = newStock;
   }
-  res.json({
-    error: '', message: '', request_id: rid(),
-    response: { item_id, update_time: ts() }
-  });
+  res.json({ error: '', message: '', request_id: rid(), response: { item_id, update_time: ts() } });
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -761,16 +713,13 @@ app.post('/webhook/push', (req, res) => {
 //  404 catch-all
 // ─────────────────────────────────────────────────────────────────────
 app.use((req, res) => {
-  res.status(404).json({
-    error:      'endpoint_not_found',
-    message:    `${req.method} ${req.path} is not implemented in this mock.`,
-    request_id: rid(),
-  });
+  res.status(404).json({ error: 'endpoint_not_found', message: `${req.method} ${req.path} is not implemented in this mock.`, request_id: rid() });
 });
 
 app.listen(PORT, () => {
   console.log(`\n🟠 Shopee Mock API running on port ${PORT}`);
-  console.log(`   Partner ID  : ${PARTNER_ID}`);
-  console.log(`   Partner Key : ${PARTNER_KEY}`);
-  console.log(`   Strict sig  : ${process.env.STRICT_SIG || 'false (demo mode)'}\n`);
+  console.log(`   Partner ID   : ${PARTNER_ID}`);
+  console.log(`   Partner Key  : ${PARTNER_KEY}`);
+  console.log(`   Odoo base URL: ${ODOO_BASE_URL || '(not set — add ODOO_BASE_URL env var)'}`);
+  console.log(`   Strict sig   : ${process.env.STRICT_SIG || 'false (demo mode)'}\n`);
 });
