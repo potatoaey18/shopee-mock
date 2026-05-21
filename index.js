@@ -287,7 +287,7 @@ tr:hover td{background:#fafafa}
       <span style="font-size:11px;color:#888" id="products-label">&mdash;</span>
     </div>
     <table>
-      <thead><tr><th>SKU</th><th>Product name</th><th>Price</th><th>Stock</th><th>Status</th></tr></thead>
+      <thead><tr><th>SKU</th><th>Product name</th><th>Price</th><th>Stock</th><th>Status</th><th>Action</th></tr></thead>
       <tbody id="products-table"><tr><td colspan="5" class="empty">Authorize shop to load products</td></tr></tbody>
     </table>
   </div>
@@ -342,26 +342,49 @@ function syncOrders(){
 
 function loadProducts(){
   incApi();
-  const products=[
-    {sku:'LAYS-001',name:"Lay\\'s Classic Salted Chips 60g",price:'\u20B162',stock:100},
-    {sku:'LAYS-002',name:"Lay\\'s Cheese & Onion Chips 60g",price:'\u20B162',stock:100},
-    {sku:'CHTO-001',name:'Cheetos Crunchy 80g',price:'\u20B162',stock:100},
-    {sku:'DORI-001',name:'Doritos Nacho Cheese 100g',price:'\u20B175',stock:100},
-    {sku:'NUTE-001',name:'Nutella Hazelnut Spread 350g',price:'\u20B1259',stock:100},
-    {sku:'MNMS-001',name:"M&M\\'s Milk Chocolate 100g",price:'\u20B1129',stock:100},
-    {sku:'FERR-002',name:'Ferrero Rocher 16pcs Box 200g',price:'\u20B1419',stock:100},
-    {sku:'QKRO-001',name:'Quaker Oats 800g',price:'\u20B1149',stock:100},
-    {sku:'SNIC-001',name:'Snickers Bar 52g',price:'\u20B145',stock:100},
-    {sku:'LOAC-001',name:'Loacker Classic Vanilla 175g',price:'\u20B1135',stock:100},
-  ];
-  const tbody=document.getElementById('products-table');tbody.innerHTML='';
-  let i=0;
-  const iv=setInterval(()=>{
-    if(i>=products.length){clearInterval(iv);document.getElementById('products-label').textContent=products.length+' products synced';return}
-    const p=products[i];
-    tbody.innerHTML+='<tr><td class="mono">'+p.sku+'</td><td>'+p.name+'</td><td style="font-weight:600">'+p.price+'</td><td>'+p.stock+'</td><td><span class="status normal">NORMAL</span></td></tr>';
-    document.getElementById('products-count').textContent=++i;
-  },180);
+  fetch('/api/v2/product/get_item_list?partner_id=1&shop_id=123456&access_token=demo&timestamp=9999999999&sign=demo&item_status=NORMAL&page_size=10')
+    .then(r=>r.json())
+    .then(data=>{
+      const ids=data.response.item.map(i=>i.item_id).join(',');
+      return fetch('/api/v2/product/get_item_base_info?partner_id=1&shop_id=123456&access_token=demo&timestamp=9999999999&sign=demo&item_id_list='+ids);
+    })
+    .then(r=>r.json())
+    .then(data=>{
+      const products=data.response.item_list;
+      const tbody=document.getElementById('products-table');tbody.innerHTML='';
+      let i=0;
+      const iv=setInterval(()=>{
+        if(i>=products.length){clearInterval(iv);document.getElementById('products-label').textContent=products.length+' products synced';return}
+        const p=products[i];
+        const stock=p.stock_info_v2.summary_info.total_available_stock;
+        const price=p.price_info[0].current_price;
+        const stockColor=stock<=10?'color:#E65100;font-weight:600':stock<=30?'color:#f59e0b;font-weight:600':'color:#16a34a;font-weight:600';
+        tbody.innerHTML+='<tr id="row-'+p.item_id+'"><td class="mono">'+p.sku+'</td><td>'+p.item_name+'</td><td style="font-weight:600">\u20B1'+price+'</td><td style="'+stockColor+'" id="stock-'+p.item_id+'">'+stock+'</td><td><span class="status normal">NORMAL</span></td><td><button class="btn btn-outline" style="padding:3px 10px;font-size:11px" onclick="deductStock('+p.item_id+',\''+p.sku+'\')">-1 sold</button></td></tr>';
+        document.getElementById('products-count').textContent=++i;
+      },180);
+    });
+}
+
+function deductStock(itemId, sku){
+  const el=document.getElementById('stock-'+itemId);
+  if(!el)return;
+  const current=parseInt(el.textContent)||0;
+  const newStock=Math.max(0,current-1);
+  fetch('/api/v2/product/update_stock?partner_id=1&shop_id=123456&access_token=demo&timestamp=9999999999&sign=demo',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({item_id:itemId,stock_list:[{model_id:0,normal_stock:newStock}]})
+  }).then(()=>{
+    el.textContent=newStock;
+    el.style.color=newStock<=10?'#E65100':newStock<=30?'#f59e0b':'#16a34a';
+    addLog('POST /api/v2/product/update_stock \u2192 '+sku+' stock: '+current+' \u2192 '+newStock+' (synced to Odoo)','ok');
+    incApi();
+    if(newStock===0){
+      el.textContent='OUT OF STOCK';
+      el.style.color='#dc2626';
+      addLog('ALERT: '+sku+' is now out of stock \u2014 Shopee listing auto-paused','info');
+    }
+  });
 }
 </script>
 </body>
@@ -588,6 +611,149 @@ app.post('/api/v2/logistics/init_shipment', requireAuth, (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
+//  AUTH  — auth_partner (Odoo calls this to get the OAuth redirect URL)
+// ─────────────────────────────────────────────────────────────────────
+app.get('/api/v2/shop/auth_partner', (req, res) => {
+  const redirectUrl = req.query.redirect_url || '';
+  const authUrl = `${req.protocol}://${req.get('host')}/api/v2/auth/callback?code=MOCK_AUTH_CODE_2026&shop_id=${DB.shop.shop_id}&redirect=${encodeURIComponent(redirectUrl)}`;
+  res.json({
+    error: '', message: '', request_id: rid(),
+    response: { auth_url: authUrl }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  LOGISTICS  — get_shipping_parameter
+// ─────────────────────────────────────────────────────────────────────
+app.get('/api/v2/logistics/get_shipping_parameter', requireAuth, (req, res) => {
+  const { order_sn } = req.query;
+  res.json({
+    error: '', message: '', request_id: rid(),
+    response: {
+      order_sn,
+      pickup: {
+        address_list: [{
+          address_id: 1,
+          address: '123 Mock Warehouse St, Manila, PH',
+          time_slot_list: [{
+            pickup_time_id: 'slot_001',
+            date: new Date().toISOString().split('T')[0],
+            time_text: '9:00 AM - 12:00 PM',
+          }]
+        }]
+      },
+      dropoff: { branch_list: [] },
+      non_integrated: null,
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  LOGISTICS  — ship_order (Odoo uses this, not init_shipment)
+// ─────────────────────────────────────────────────────────────────────
+app.post('/api/v2/logistics/ship_order', requireAuth, (req, res) => {
+  const { order_sn } = req.body;
+  const order = DB.orders.find(o => o.order_sn === order_sn);
+  if (!order) {
+    return res.json({ error: 'order_not_found', message: `Order ${order_sn} not found.`, request_id: rid(), response: {} });
+  }
+  const tracking = 'PHSPX' + Date.now();
+  order.tracking_no  = tracking;
+  order.order_status = 'SHIPPED';
+  order.update_time  = ts();
+  // Deduct stock for each item in the order
+  order.item_list.forEach(item => {
+    const product = DB.products.find(p => p.item_id === item.item_id);
+    if (product) product.stock = Math.max(0, product.stock - item.model_quantity_purchased);
+  });
+  res.json({
+    error: '', message: '', request_id: rid(),
+    response: { hint_message: 'Shipment initiated successfully.' }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  LOGISTICS  — get_tracking_number
+// ─────────────────────────────────────────────────────────────────────
+app.get('/api/v2/logistics/get_tracking_number', requireAuth, (req, res) => {
+  const { order_sn } = req.query;
+  const order = DB.orders.find(o => o.order_sn === order_sn);
+  const tracking = order ? (order.tracking_no || 'PHSPX' + Date.now()) : 'PHSPX' + Date.now();
+  res.json({
+    error: '', message: '', request_id: rid(),
+    response: { tracking_number: tracking, plp_number: '', hint_message: '' }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  LOGISTICS  — create_shipping_document
+// ─────────────────────────────────────────────────────────────────────
+app.post('/api/v2/logistics/create_shipping_document', requireAuth, (req, res) => {
+  const { order_list } = req.body;
+  res.json({
+    error: '', message: '', request_id: rid(),
+    response: {
+      result_list: (order_list || []).map(o => ({
+        order_sn: o.order_sn,
+        status: 'READY',
+        fail_error: '',
+        fail_message: '',
+      }))
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  LOGISTICS  — get_shipping_document_result
+// ─────────────────────────────────────────────────────────────────────
+app.get('/api/v2/logistics/get_shipping_document_result', requireAuth, (req, res) => {
+  const raw = req.query.order_list || '[]';
+  let orders = [];
+  try { orders = JSON.parse(raw); } catch(e) {}
+  res.json({
+    error: '', message: '', request_id: rid(),
+    response: {
+      result_list: orders.map(o => ({
+        order_sn: o.order_sn,
+        status: 'READY',
+        fail_error: '',
+        fail_message: '',
+      }))
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  LOGISTICS  — download_shipping_document
+// ─────────────────────────────────────────────────────────────────────
+app.post('/api/v2/logistics/download_shipping_document', requireAuth, (req, res) => {
+  res.json({
+    error: '', message: '', request_id: rid(),
+    response: { file_type: 'PDF', file_url: `${req.protocol}://${req.get('host')}/mock-label.pdf` }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  PRODUCT  — update_stock (Pain point #2 & #3: real-time stock sync)
+// ─────────────────────────────────────────────────────────────────────
+app.post('/api/v2/product/update_stock', requireAuth, (req, res) => {
+  const { item_id, stock_list } = req.body;
+  const product = DB.products.find(p => p.item_id === item_id);
+  if (!product) {
+    return res.json({ error: 'item_not_found', message: `Item ${item_id} not found.`, request_id: rid(), response: {} });
+  }
+  if (stock_list && stock_list[0]) {
+    const newStock = stock_list[0].normal_stock;
+    console.log(`[STOCK SYNC] ${product.sku} (${product.name}): ${product.stock} → ${newStock}`);
+    product.stock = newStock;
+  }
+  res.json({
+    error: '', message: '', request_id: rid(),
+    response: { item_id, update_time: ts() }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
 //  WEBHOOK RECEIVER  (Odoo-side simulation)
 // ─────────────────────────────────────────────────────────────────────
 app.post('/webhook/push', (req, res) => {
@@ -596,16 +762,6 @@ app.post('/webhook/push', (req, res) => {
   res.json({ code: 0, message: 'success', request_id: rid() });
 });
 
-app.get('/api/v2/shop/auth_partner', (req, res) => {
-  const redirectUrl = req.query.redirect_url || '';
-  const authUrl = `${req.protocol}://${req.get('host')}/api/v2/auth/callback?code=MOCK_AUTH_CODE_2026&shop_id=${DB.shop.shop_id}&redirect=${encodeURIComponent(redirectUrl)}`;
-  res.json({
-    error: '',
-    message: '',
-    request_id: rid(),
-    response: { auth_url: authUrl }
-  });
-});
 // ─────────────────────────────────────────────────────────────────────
 //  404 catch-all
 // ─────────────────────────────────────────────────────────────────────
