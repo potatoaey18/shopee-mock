@@ -577,9 +577,11 @@ app.post('/api/v2/product/update_stock', requireAuth, (req, res) => {
 //  Odoo uses update_time range and cursor-based pagination.
 // ─────────────────────────────────────────────────────────────────────
 app.get('/api/v2/order/get_order_list', requireAuth, (req, res) => {
-  const timeFrom    = parseInt(req.query.update_time_from || req.query.create_time_from) || 0;
-  const timeTo      = parseInt(req.query.update_time_to   || req.query.create_time_to)   || ts();
-  const orderStatus = req.query.order_status;
+  const timeFrom = parseInt(req.query.update_time_from || req.query.create_time_from) || 0;
+  const timeTo   = parseInt(req.query.update_time_to   || req.query.create_time_to)   || ts();
+
+  // Always freshen update_time so orders are never stale vs Odoo's last sync
+  DB.orders.forEach(o => { o.update_time = ts() - 60; });
 
   let orders = DB.orders.filter(o => o.update_time >= timeFrom && o.update_time <= timeTo);
   if (orderStatus) orders = orders.filter(o => o.order_status === orderStatus);
