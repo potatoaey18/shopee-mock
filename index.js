@@ -585,7 +585,6 @@ app.post('/api/demo/ship_order', (req, res) => {
 //  DEMO API — print label (from dashboard UI)
 // ─────────────────────────────────────────────────────────────────────
 app.get('/api/demo/print_label/:order_sn', (req, res) => {
-app.get('/api/demo/print_label/:order_sn', (req, res) => {
   const { order_sn } = req.params;
   const order    = DB.orders.find(o => o.order_sn === order_sn);
   const tracking = DB.trackingNumbers[order_sn] || 'N/A';
