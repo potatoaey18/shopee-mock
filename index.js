@@ -43,8 +43,57 @@ function rid()    { return 'mock_' + Math.random().toString(36).slice(2, 10).toU
 function ts()     { return Math.floor(Date.now() / 1000); }
 function nowStr() { return new Date().toISOString().replace('T', ' ').substring(0, 19); }
 
+// ── ODOO WEBHOOK NOTIFIER ─────────────────────────────────────────────
+// Called when an order reaches "Delivered" (step 4) to attempt pushing
+// an ORDER_STATUS_UPDATE webhook event to Odoo.
+async function notifyOdooDelivered(order_sn) {
+  if (!ODOO_BASE_URL) {
+    console.warn(`[WEBHOOK] ODOO_BASE_URL not set — skipping delivery notification for ${order_sn}`);
+    return;
+  }
+
+  // Common webhook paths used by Shopee Odoo connectors.
+  // We try each one; the first that responds 2xx wins.
+  const candidatePaths = [
+    '/shopee/webhook',
+    '/web/shopee/webhook',
+    '/shopee_connector/webhook',
+    '/web/action/shopee_connector.action_shopee_webhook',
+  ];
+
+  const payload = {
+    code: 3,          // Shopee push code for ORDER_STATUS_UPDATE
+    timestamp: ts(),
+    shop_id: DB.shop.shop_id,
+    data: {
+      ordersn: order_sn,
+      status: 'COMPLETED',
+      update_time: ts(),
+    },
+  };
+
+  for (const path of candidatePaths) {
+    const url = `${ODOO_BASE_URL}${path}`;
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (resp.ok) {
+        console.log(`[WEBHOOK] ✅ Odoo notified at ${url} — order ${order_sn} COMPLETED`);
+        return;
+      }
+      console.warn(`[WEBHOOK] ${url} responded ${resp.status} — trying next path`);
+    } catch (err) {
+      console.warn(`[WEBHOOK] ${url} unreachable — ${err.message}`);
+    }
+  }
+  console.warn(`[WEBHOOK] ⚠️  All Odoo webhook paths failed for ${order_sn}. Odoo will sync on next cron run.`);
+}
+
 // ── PDF GENERATOR (no external deps) ─────────────────────────────────
-// Builds a valid PDF using proper xref offsets so Odoo can store it.
 function buildPDF(lines) {
   const streamLines = lines.map(l => l.cmd).join('\n');
   const stream = `BT\n${streamLines}\nET`;
@@ -113,6 +162,10 @@ function buildAuthUrl(req) {
   return `${self}/api/v2/auth/authorize?${params.toString()}`;
 }
 
+// ── DELIVERY STATUS STEPS ─────────────────────────────────────────────
+// 0: Order Placed  1: Picked Up  2: In Transit  3: Out for Delivery  4: Delivered
+const DELIVERY_STEPS = ['Order Placed', 'Picked Up', 'In Transit', 'Out for Delivery', 'Delivered'];
+
 // ── IN-MEMORY DATA STORE ──────────────────────────────────────────────
 const DB = {
   shop: {
@@ -126,7 +179,6 @@ const DB = {
     description: 'Mock Shopee shop for Odoo demo integration.',
   },
 
-  // Used only for order line name/sku lookups
   products: [
     { item_id: 10001, model_id: 0, name: "Lay's Classic Salted Chips 60g",           sku: 'LAYS-001' },
     { item_id: 10002, model_id: 0, name: "Lay's Cheese & Onion Chips 60g",           sku: 'LAYS-002' },
@@ -180,7 +232,6 @@ const DB = {
     { item_id: 10050, model_id: 0, name: "Reynolds Cut-Rite Wax Paper 75 sqft",     sku: 'REYN-006' },
   ],
 
-  // Populated by Odoo via update_stock — source of truth for dashboard
   syncedProducts: {},
 
   orders: [
@@ -233,27 +284,34 @@ const DB = {
     },
   ],
 
-  labelStatus:     {},
-  trackingNumbers: {},
+  labelStatus:      {},
+  trackingNumbers:  {},
+  // ── NEW: stores delivery step (0-4) per order_sn ──────────────────
+  // Set to 1 ("Picked Up") automatically when an order is shipped.
+  deliveryStatus:   {},
 };
 
 let orderCounter = 4;
 
 // ─────────────────────────────────────────────────────────────────────
-//  TRACKING PAGE — for Odoo's "Track" smart button
-//  Odoo needs a URL pattern like: https://your-mock.com/track/{tracking}
-//  Set this as the tracking URL on the delivery carrier in Odoo.
+//  TRACKING PAGE
 // ─────────────────────────────────────────────────────────────────────
 app.get('/track/:tracking', (req, res) => {
   const { tracking } = req.params;
-  const order = DB.orders.find(o => o.tracking_no === tracking || DB.trackingNumbers[o.order_sn] === tracking) 
-    || { 
-      order_sn: 'SHOPEE-ORDER', 
-      shipping_carrier: 'SPX Express',
-      recipient_address: { name: 'Customer', city: 'Manila', state: 'Metro Manila' },
-    };
-  const statusSteps = ['Order Placed', 'Picked Up', 'In Transit', 'Out for Delivery', 'Delivered'];
-  const currentStep = tracking.startsWith('PHSPX') ? 2 : 1;
+  const order = DB.orders.find(o =>
+    o.tracking_no === tracking || DB.trackingNumbers[o.order_sn] === tracking
+  );
+  const currentStep = order
+    ? (DB.deliveryStatus[order.order_sn] ?? (order.order_status === 'SHIPPED' ? 1 : 0))
+    : 1;
+
+  const stepTimes = DELIVERY_STEPS.map((_, i) => {
+    if (!order || i > currentStep) return '';
+    const baseTime = order.update_time || ts();
+    // Each past step is spaced ~2 hours apart going backward from now
+    const secsAgo = (currentStep - i) * 7200;
+    return new Date((baseTime - secsAgo) * 1000).toLocaleString('en-PH', { timeZone: 'Asia/Manila' });
+  });
 
   res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -274,7 +332,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .info-row .value{font-weight:600}
 .divider{border:none;border-top:1px solid #f0f0f0;margin:16px 0}
 .steps{margin-top:8px}
-.step{display:flex;align-items:flex-start;gap:14px;margin-bottom:16px}
+.step{display:flex;align-items:flex-start;gap:14px;margin-bottom:4px}
 .step-icon{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0;margin-top:2px}
 .step-icon.done{background:#EE4D2D;color:white}
 .step-icon.active{background:#EE4D2D;color:white;box-shadow:0 0 0 4px rgba(238,77,45,.2)}
@@ -282,8 +340,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .step-label{font-size:13px;font-weight:600;color:#1a1a1a}
 .step-label.pending{color:#bbb}
 .step-time{font-size:11px;color:#888;margin-top:2px}
-.step-line{width:2px;height:16px;background:#f0f0f0;margin-left:13px;margin-bottom:0}
-.step-line.done{background:#EE4D2D}
+.step-connector{width:2px;height:20px;margin-left:13px;background:#f0f0f0;margin-bottom:4px}
+.step-connector.done{background:#EE4D2D}
+.delivered-banner{background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:12px 14px;margin-top:16px;text-align:center;font-size:13px;font-weight:600;color:#15803d}
 .mock-badge{background:#fffbeb;border-top:1px solid #fcd34d;text-align:center;padding:10px;font-size:11px;color:#92400e}
 </style>
 </head>
@@ -302,23 +361,24 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <div class="info-row"><span class="label">Destination</span><span class="value">${order.recipient_address.city}, ${order.recipient_address.state}</span></div>
     <hr class="divider">
     <div class="steps">
-      ${statusSteps.map((step, i) => {
+      ${DELIVERY_STEPS.map((stepName, i) => {
         const isDone   = i < currentStep;
         const isActive = i === currentStep;
         const cls      = isDone ? 'done' : isActive ? 'active' : 'pending';
         const icon     = isDone ? '✓' : isActive ? '●' : '○';
-        const time     = isDone ? new Date(Date.now() - (currentStep - i) * 3600000).toLocaleString() : isActive ? 'Now' : '';
         return `
-          ${i > 0 ? `<div class="step-line ${i <= currentStep ? 'done' : ''}"></div>` : ''}
+          ${i > 0 ? `<div class="step-connector ${i <= currentStep ? 'done' : ''}"></div>` : ''}
           <div class="step">
             <div class="step-icon ${cls}">${icon}</div>
             <div>
-              <div class="step-label ${cls}">${step}</div>
-              ${time ? `<div class="step-time">${time}</div>` : ''}
+              <div class="step-label ${!isDone && !isActive ? 'pending' : ''}">${stepName}</div>
+              ${stepTimes[i] ? `<div class="step-time">${stepTimes[i]}</div>` : ''}
             </div>
           </div>`;
       }).join('')}
-    </div>` : `<p style="color:#888;text-align:center;padding:20px">Tracking number not found in mock system.<br><br><strong>${tracking}</strong></p>`}
+    </div>
+    ${currentStep === 4 ? `<div class="delivered-banner">✅ Package delivered successfully!</div>` : ''}
+    ` : `<p style="color:#888;text-align:center;padding:20px">Tracking number not found.<br><br><strong>${tracking}</strong></p>`}
   </div>
   <div class="mock-badge">🟠 Shopee Mock API — Demo tracking page</div>
 </div>
@@ -348,25 +408,42 @@ app.get('/', (req, res) => {
     : `<tr><td colspan="5" class="empty">No products synced from Odoo yet — trigger <strong>Sync Inventory</strong> in Odoo</td></tr>`;
 
   const orderRows = DB.orders.map(o => {
-    const tracking = DB.trackingNumbers[o.order_sn] || '';
-    const labelSt  = DB.labelStatus[o.order_sn] || '';
-    const cls      = o.order_status === 'SHIPPED' ? 'shipped' : 'ready';
-    const items    = o.item_list.map(i => `${i.item_name.split(' ').slice(0,3).join(' ')} x${i.model_quantity_purchased}`).join(', ');
+    const tracking   = DB.trackingNumbers[o.order_sn] || '';
+    const labelSt    = DB.labelStatus[o.order_sn]     || '';
+    const delivStep  = DB.deliveryStatus[o.order_sn];
+    const isShipped  = o.order_status === 'SHIPPED';
+    const isDelivered = delivStep === 4;
+    const cls        = isDelivered ? 'delivered' : isShipped ? 'shipped' : 'ready';
+    const statusLabel = isDelivered ? 'DELIVERED' : o.order_status;
+    const items      = o.item_list.map(i => `${i.item_name.split(' ').slice(0,3).join(' ')} x${i.model_quantity_purchased}`).join(', ');
+
+    // Delivery advance button: only show for SHIPPED orders not yet DELIVERED
+    let actionBtn = '';
+    if (!isShipped) {
+      actionBtn = `<button class="btn btn-sm" onclick="shipOrder('${o.order_sn}')">Ship</button>`;
+    } else if (!isDelivered) {
+      const nextStep = (delivStep ?? 1) + 1;
+      const nextLabel = DELIVERY_STEPS[nextStep] || 'Delivered';
+      actionBtn = `
+        <button class="btn btn-sm btn-blue" onclick="advanceDelivery('${o.order_sn}')" title="Advance to: ${nextLabel}">
+          → ${nextLabel}
+        </button>
+        <button class="btn btn-sm btn-green" onclick="printLabel('${o.order_sn}')" style="margin-left:4px">Label</button>`;
+    } else {
+      actionBtn = `<span style="color:#16a34a;font-size:11px;font-weight:600">✓ Done</span>`;
+    }
+
     return `<tr>
       <td class="mono">${o.order_sn}</td>
       <td>${o.recipient_address.name}</td>
       <td style="color:#888;font-size:11px">${items}</td>
       <td style="font-weight:600">&#8369;${o.total_amount}</td>
-      <td><span class="status ${cls}">${o.order_status}</span></td>
+      <td><span class="status ${cls}">${statusLabel}</span></td>
       <td class="mono" style="font-size:10px">
         ${tracking ? `<a href="/track/${tracking}" target="_blank" style="color:#EE4D2D;text-decoration:none">${tracking}</a>` : '—'}
       </td>
       <td>${labelSt ? `<span class="badge-label ${labelSt.toLowerCase().replace(' ','-')}">${labelSt}</span>` : '—'}</td>
-      <td>
-        ${o.order_status !== 'SHIPPED'
-          ? `<button class="btn btn-sm" onclick="shipOrder('${o.order_sn}')">Ship</button>`
-          : `<button class="btn btn-sm btn-green" onclick="printLabel('${o.order_sn}')">Print Label</button>`}
-      </td>
+      <td style="white-space:nowrap">${actionBtn}</td>
     </tr>`;
   }).join('');
 
@@ -398,9 +475,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .section-title{font-size:13px;font-weight:600}
 .btn{padding:6px 14px;border-radius:7px;font-size:12px;cursor:pointer;border:none;font-weight:600;transition:all .15s;background:#EE4D2D;color:white}
 .btn:hover{background:#d94426}
-.btn-sm{padding:3px 10px;font-size:11px;background:#EE4D2D;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600}
-.btn-sm:hover{background:#d94426}
-.btn-green{background:#16a34a!important}.btn-green:hover{background:#15803d!important}
+.btn-sm{padding:3px 10px;font-size:11px;border:none;border-radius:6px;cursor:pointer;font-weight:600;background:#EE4D2D;color:white}
+.btn-sm:hover{filter:brightness(0.9)}
+.btn-green{background:#16a34a!important;color:white!important}.btn-green:hover{background:#15803d!important}
+.btn-blue{background:#1D4ED8!important;color:white!important}.btn-blue:hover{background:#1e40af!important}
 .btn-outline{background:transparent;border:1px solid #ddd;color:#333}.btn-outline:hover{background:#f5f5f5}
 table{width:100%;border-collapse:collapse;font-size:12px}
 th{text-align:left;padding:8px 16px;font-size:11px;color:#888;font-weight:500;border-bottom:1px solid #f0f0f0;background:#fafafa;white-space:nowrap}
@@ -409,7 +487,8 @@ tr:last-child td{border-bottom:none}
 tr:hover td{background:#fafafa}
 .status{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600}
 .status.ready{background:#FFF3E0;color:#E65100}
-.status.shipped{background:#E8F5E9;color:#2E7D32}
+.status.shipped{background:#E3F2FD;color:#1565C0}
+.status.delivered{background:#E8F5E9;color:#2E7D32}
 .badge-odoo{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600;background:#E3F2FD;color:#1565C0}
 .badge-label{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600}
 .badge-label.processing{background:#FFF3E0;color:#E65100}
@@ -427,31 +506,37 @@ tr:hover td{background:#fafafa}
 .new-order-form{padding:14px 16px;background:#fafafa;border-top:1px solid #f0f0f0;display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}
 .new-order-form label{font-size:11px;color:#888;display:block;margin-bottom:3px}
 .new-order-form input,.new-order-form select{padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px;min-width:130px}
+.legend{font-size:11px;color:#888;padding:8px 16px;border-top:1px solid #f0f0f0;background:#fafafa}
+.legend span{margin-right:12px}
 </style>
 </head>
 <body>
 <div class="header">
   <div class="header-logo">S</div>
   <h1>Shopee Mock API &mdash; Demo Dashboard</h1>
-  <span class="hbadge"><span class="dot"></span>Live &nbsp;&bull;&nbsp; v3.1.0 &nbsp;&bull;&nbsp; Partner ID: ${PARTNER_ID}</span>
+  <span class="hbadge"><span class="dot"></span>Live &nbsp;&bull;&nbsp; v3.2.0 &nbsp;&bull;&nbsp; Partner ID: ${PARTNER_ID}</span>
 </div>
 <div class="container">
 
-  ${!ODOO_BASE_URL ? `<div class="warn">⚠️ <strong>ODOO_BASE_URL</strong> is not set. Set this env var to your Odoo URL for OAuth to work.</div>` : ''}
+  ${!ODOO_BASE_URL ? `<div class="warn">⚠️ <strong>ODOO_BASE_URL</strong> is not set. Set this env var to your Odoo URL for OAuth and webhook delivery notifications to work.</div>` : ''}
 
   <div class="banner"><span>&#x1F7E2; Connected &mdash; ${DB.shop.shop_name} &nbsp;&bull;&nbsp; ID: ${DB.shop.shop_id} &nbsp;&bull;&nbsp; Region: ${DB.shop.region}</span></div>
 
   <div class="info-box">
     &#128279; <strong>Tracking URL for Odoo delivery carrier:</strong>
     &nbsp;<code>${self}/track/</code>&nbsp;
-    — set this as the tracking URL on the SPX Express and J&amp;T Express carriers in Odoo (Inventory → Configuration → Delivery Methods → Tracking URL field, append <code>{tracking_ref}</code>).
+    — set this as the tracking URL on the SPX Express and J&amp;T Express carriers in Odoo
+    (Inventory → Configuration → Delivery Methods → Tracking URL field, append <code>{tracking_ref}</code>).
+    <br><br>
+    &#x1F4E6; <strong>Delivery status:</strong> Once an order is shipped, use the <strong>→ [Next Step]</strong> button on each row to advance its tracking status.
+    When it reaches <strong>Delivered</strong>, the mock will attempt to notify Odoo via webhook so it can close the transfer and sync inventory.
   </div>
 
   <div class="cards">
     <div class="card"><div class="card-label">Orders</div><div class="card-value orange">${DB.orders.length}</div></div>
     <div class="card"><div class="card-label">Products (from Odoo)</div><div class="card-value green">${synced.length}</div></div>
-    <div class="card"><div class="card-label">Shipped</div><div class="card-value">${DB.orders.filter(o => o.order_status === 'SHIPPED').length}</div></div>
-    <div class="card"><div class="card-label">Out of Stock</div><div class="card-value orange">${synced.filter(p => p.stock === 0).length}</div></div>
+    <div class="card"><div class="card-label">Shipped</div><div class="card-value">${DB.orders.filter(o => o.order_status === 'SHIPPED' && (DB.deliveryStatus[o.order_sn] ?? 0) < 4).length}</div></div>
+    <div class="card"><div class="card-label">Delivered</div><div class="card-value green">${DB.orders.filter(o => DB.deliveryStatus[o.order_sn] === 4).length}</div></div>
   </div>
 
   <div class="section">
@@ -463,6 +548,11 @@ tr:hover td{background:#fafafa}
       <thead><tr><th>Order No.</th><th>Customer</th><th>Items</th><th>Amount</th><th>Status</th><th>Tracking</th><th>Label</th><th>Action</th></tr></thead>
       <tbody id="orders-tbody">${orderRows}</tbody>
     </table>
+    <div class="legend">
+      <span>&#x1F6A2; <strong>Ship</strong> — mark order as shipped &amp; assign tracking</span>
+      <span>&#x27A1;&#xFE0F; <strong>→ [Next Step]</strong> — advance delivery status (notifies Odoo on Delivered)</span>
+      <span>&#x1F3F7;&#xFE0F; <strong>Label</strong> — open printable label</span>
+    </div>
     <div class="new-order-form" id="new-order-form" style="display:none">
       <div><label>Customer Name</label><input id="nof-name" type="text" value="Pedro Santos"></div>
       <div><label>Phone</label><input id="nof-phone" type="text" value="+639171112233"></div>
@@ -501,32 +591,82 @@ tr:hover td{background:#fafafa}
 </div>
 <div class="toast" id="toast"></div>
 <script>
-function toast(msg,dur=3500){const el=document.getElementById('toast');el.textContent=msg;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),dur)}
-function createNewOrder(){const f=document.getElementById('new-order-form');f.style.display=f.style.display==='none'?'flex':'none'}
-function submitNewOrder(){
-  const name=document.getElementById('nof-name').value.trim();
-  const phone=document.getElementById('nof-phone').value.trim();
-  const city=document.getElementById('nof-city').value.trim();
-  const carrier=document.getElementById('nof-carrier').value;
-  const sel=document.getElementById('nof-product');
-  const itemId=parseInt(sel.value);
-  const sku=sel.selectedOptions[0].dataset.sku;
-  const pname=sel.selectedOptions[0].dataset.name;
-  const qty=parseInt(document.getElementById('nof-qty').value)||1;
-  const price=parseFloat(document.getElementById('nof-price').value)||100;
-  if(!name||!city){toast('Please fill in customer name and city.');return}
-  fetch('/api/demo/create_order',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({name,phone,city,carrier,item_id:itemId,sku,item_name:pname,qty,price})})
-  .then(r=>r.json()).then(d=>{toast('✅ Order '+d.order_sn+' created — Odoo will sync on next cron run');
-    document.getElementById('new-order-form').style.display='none';setTimeout(()=>location.reload(),1800)})
-  .catch(()=>toast('❌ Failed to create order'));
+const DELIVERY_STEPS = ${JSON.stringify(DELIVERY_STEPS)};
+
+function toast(msg, dur=3500) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), dur);
 }
-function shipOrder(sn){
-  fetch('/api/demo/ship_order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_sn:sn})})
-  .then(r=>r.json()).then(d=>{toast('🚚 '+sn+' shipped — tracking: '+d.tracking_number);setTimeout(()=>location.reload(),1800)})
-  .catch(()=>toast('❌ Failed to ship order'));
+
+function createNewOrder() {
+  const f = document.getElementById('new-order-form');
+  f.style.display = f.style.display === 'none' ? 'flex' : 'none';
 }
-function printLabel(sn){window.open('/api/demo/print_label/'+sn,'_blank')}
+
+function submitNewOrder() {
+  const name  = document.getElementById('nof-name').value.trim();
+  const phone = document.getElementById('nof-phone').value.trim();
+  const city  = document.getElementById('nof-city').value.trim();
+  const carrier = document.getElementById('nof-carrier').value;
+  const sel   = document.getElementById('nof-product');
+  const itemId  = parseInt(sel.value);
+  const sku     = sel.selectedOptions[0].dataset.sku;
+  const pname   = sel.selectedOptions[0].dataset.name;
+  const qty   = parseInt(document.getElementById('nof-qty').value) || 1;
+  const price = parseFloat(document.getElementById('nof-price').value) || 100;
+  if (!name || !city) { toast('Please fill in customer name and city.'); return; }
+  fetch('/api/demo/create_order', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, phone, city, carrier, item_id: itemId, sku, item_name: pname, qty, price }),
+  })
+  .then(r => r.json())
+  .then(d => {
+    toast('✅ Order ' + d.order_sn + ' created — Odoo will sync on next cron run');
+    document.getElementById('new-order-form').style.display = 'none';
+    setTimeout(() => location.reload(), 1800);
+  })
+  .catch(() => toast('❌ Failed to create order'));
+}
+
+function shipOrder(sn) {
+  fetch('/api/demo/ship_order', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ order_sn: sn }),
+  })
+  .then(r => r.json())
+  .then(d => {
+    toast('🚚 ' + sn + ' shipped — tracking: ' + d.tracking_number);
+    setTimeout(() => location.reload(), 1800);
+  })
+  .catch(() => toast('❌ Failed to ship order'));
+}
+
+function advanceDelivery(sn) {
+  fetch('/api/demo/advance_delivery', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ order_sn: sn }),
+  })
+  .then(r => r.json())
+  .then(d => {
+    const stepName = DELIVERY_STEPS[d.step] || 'Unknown';
+    if (d.step === 4) {
+      toast('✅ ' + sn + ' marked as Delivered — Odoo notified!', 4500);
+    } else {
+      toast('📦 ' + sn + ' → ' + stepName);
+    }
+    setTimeout(() => location.reload(), 1800);
+  })
+  .catch(() => toast('❌ Failed to advance delivery status'));
+}
+
+function printLabel(sn) {
+  window.open('/api/demo/print_label/' + sn, '_blank');
+}
 </script>
 </body>
 </html>`);
@@ -538,14 +678,14 @@ function printLabel(sn){window.open('/api/demo/print_label/'+sn,'_blank')}
 app.post('/api/demo/create_order', (req, res) => {
   const { name, phone, city, carrier, item_id, sku, item_name, qty, price } = req.body;
   orderCounter++;
-  const today = new Date().toISOString().slice(0,10).replace(/-/g,'');
-  const sn    = `SPX${today}${String(orderCounter).padStart(3,'0')}`;
+  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const sn    = `SPX${today}${String(orderCounter).padStart(3, '0')}`;
   const order = {
     order_sn: sn, order_status: 'READY_TO_SHIP',
     fulfillment_flag: 'fulfilled_by_local_seller',
     create_time: ts(), update_time: ts(),
     buyer_user_id: 1000 + orderCounter,
-    buyer_username: name.toLowerCase().replace(/\s+/g,'_'),
+    buyer_username: name.toLowerCase().replace(/\s+/g, '_'),
     shipping_carrier: carrier || 'SPX Express',
     currency: 'PHP', total_amount: qty * price,
     estimated_shipping_fee: 0, actual_shipping_fee: 0, actual_shipping_fee_confirmed: false,
@@ -553,7 +693,7 @@ app.post('/api/demo/create_order', (req, res) => {
     package_list: [{ package_number: '', logistics_status: 'LOGISTICS_REQUEST_CREATED', shipping_carrier: carrier || 'SPX Express', item_list: [] }],
     recipient_address: {
       name, phone: phone || '+639000000000',
-      full_address: `${Math.floor(Math.random()*999)+1} Demo Street, Barangay Central, ${city}, Metro Manila, 1000, PH`,
+      full_address: `${Math.floor(Math.random() * 999) + 1} Demo Street, Barangay Central, ${city}, Metro Manila, 1000, PH`,
       city, state: 'Metro Manila', region: 'PH', zipcode: '1000',
     },
     item_list: [{
@@ -574,18 +714,66 @@ app.post('/api/demo/ship_order', (req, res) => {
   const { order_sn } = req.body;
   const order = DB.orders.find(o => o.order_sn === order_sn);
   if (!order) return res.status(404).json({ error: 'Order not found' });
+
   const tracking = 'PHSPX' + Date.now();
   order.order_status = 'SHIPPED';
   order.tracking_no  = tracking;
   order.update_time  = ts();
   DB.trackingNumbers[order_sn] = tracking;
   DB.labelStatus[order_sn]     = 'PROCESSING';
-  order.item_list.forEach(item => {
-    const sp = DB.syncedProducts[item.item_id];
-    if (sp) { sp.stock = Math.max(0, sp.stock - item.model_quantity_purchased); sp.last_sync = nowStr(); }
-  });
-  console.log(`[DEMO] ${order_sn} shipped — ${tracking}`);
+
+  // Start delivery at step 1 — "Picked Up"
+  DB.deliveryStatus[order_sn] = 1;
+
+  console.log(`[DEMO] ${order_sn} shipped — ${tracking} (delivery step: 1 Picked Up)`);
   res.json({ order_sn, tracking_number: tracking, message: 'Order shipped successfully' });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  DEMO — advance delivery status  ← NEW
+// ─────────────────────────────────────────────────────────────────────
+app.post('/api/demo/advance_delivery', async (req, res) => {
+  const { order_sn } = req.body;
+  const order = DB.orders.find(o => o.order_sn === order_sn);
+  if (!order) return res.status(404).json({ error: 'Order not found' });
+  if (order.order_status !== 'SHIPPED') {
+    return res.status(400).json({ error: 'Order must be SHIPPED before advancing delivery status.' });
+  }
+
+  const current = DB.deliveryStatus[order_sn] ?? 1;
+  if (current >= 4) {
+    return res.json({ order_sn, step: 4, step_name: 'Delivered', message: 'Already delivered.' });
+  }
+
+  const next = current + 1;
+  DB.deliveryStatus[order_sn] = next;
+  order.update_time = ts();
+
+  console.log(`[DELIVERY] ${order_sn} → step ${next} (${DELIVERY_STEPS[next]})`);
+
+  // When reaching "Delivered" (step 4):
+  // 1. Deduct stock in DB.syncedProducts (mirrors what Odoo would do)
+  // 2. Attempt to notify Odoo via webhook
+  if (next === 4) {
+    order.item_list.forEach(item => {
+      const sp = DB.syncedProducts[item.item_id];
+      if (sp) {
+        sp.stock     = Math.max(0, sp.stock - item.model_quantity_purchased);
+        sp.last_sync = nowStr();
+        console.log(`[STOCK] ${sp.sku}: deducted ${item.model_quantity_purchased} → ${sp.stock} remaining`);
+      }
+    });
+
+    // Fire-and-forget webhook to Odoo (errors are logged, not thrown)
+    notifyOdooDelivered(order_sn).catch(e => console.warn('[WEBHOOK] Unhandled error:', e.message));
+  }
+
+  res.json({
+    order_sn,
+    step:      next,
+    step_name: DELIVERY_STEPS[next],
+    message:   next === 4 ? 'Order marked as delivered. Odoo webhook attempted. Stock deducted.' : `Advanced to: ${DELIVERY_STEPS[next]}`,
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -833,8 +1021,11 @@ app.post('/api/v2/logistics/ship_order', requireAuth, (req, res) => {
   const order = DB.orders.find(o => o.order_sn === order_sn);
   if (!order) return res.json({ error: 'order_not_found', message: `Order ${order_sn} not found.`, request_id: rid(), response: {} });
   const tracking = 'PHSPX' + Date.now();
-  order.tracking_no = tracking; order.order_status = 'SHIPPED'; order.update_time = ts();
-  DB.trackingNumbers[order_sn] = tracking;
+  order.tracking_no  = tracking;
+  order.order_status = 'SHIPPED';
+  order.update_time  = ts();
+  DB.trackingNumbers[order_sn]  = tracking;
+  DB.deliveryStatus[order_sn]   = 1; // Picked Up
   res.json({ error: '', message: '', request_id: rid(), response: { hint_message: 'Shipment initiated successfully.' } });
 });
 
@@ -843,8 +1034,11 @@ app.post('/api/v2/logistics/init_shipment', requireAuth, (req, res) => {
   const order = DB.orders.find(o => o.order_sn === order_sn);
   if (!order) return res.json({ error: 'order_not_found', message: `Order ${order_sn} not found.`, request_id: rid(), response: {} });
   const tracking = 'PHSPX' + Date.now();
-  order.tracking_no = tracking; order.order_status = 'SHIPPED'; order.update_time = ts();
+  order.tracking_no  = tracking;
+  order.order_status = 'SHIPPED';
+  order.update_time  = ts();
   DB.trackingNumbers[order_sn] = tracking;
+  DB.deliveryStatus[order_sn]  = 1; // Picked Up
   res.json({ error: '', message: '', request_id: rid(), response: { order_sn, tracking_number: tracking, hint_message: 'Shipment initiated successfully.' } });
 });
 
@@ -863,6 +1057,7 @@ function handleDocResult(order_list) {
     return { order_sn: o.order_sn, status: DB.labelStatus[o.order_sn] || 'READY', fail_error: '', fail_message: '' };
   });
 }
+
 app.post('/api/v2/logistics/get_shipping_document_result', requireAuth, (req, res) => {
   res.json({ error: '', message: '', request_id: rid(), response: { result_list: handleDocResult(req.body.order_list || []) } });
 });
@@ -871,7 +1066,6 @@ app.get('/api/v2/logistics/get_shipping_document_result', requireAuth, (req, res
   res.json({ error: '', message: '', request_id: rid(), response: { result_list: handleDocResult(ol) } });
 });
 
-// download_shipping_document — returns a valid PDF using computed xref offsets
 app.post('/api/v2/logistics/download_shipping_document', requireAuth, (req, res) => {
   const order_list = req.body.order_list || [];
   const order_sn   = order_list[0]?.order_sn || 'UNKNOWN';
@@ -894,7 +1088,7 @@ app.post('/api/v2/logistics/download_shipping_document', requireAuth, (req, res)
     '/F1 11 Tf 0 -16 Td (' + safe(recipient) + ') Tj',
     '/F1 9 Tf 0 -13 Td (' + safe(addr) + ') Tj',
     '/F2 9 Tf 0 -20 Td (ITEMS:) Tj',
-    '/F1 9 Tf 0 -13 Td (' + safe(itemLines.substring(0,70)) + ') Tj',
+    '/F1 9 Tf 0 -13 Td (' + safe(itemLines.substring(0, 70)) + ') Tj',
     '/F1 8 Tf 0 -30 Td (MOCK LABEL - Shopee Demo Environment) Tj',
   ].join('\n');
 
@@ -910,28 +1104,25 @@ app.post('/api/v2/logistics/download_shipping_document', requireAuth, (req, res)
   const o6h  = `6 0 obj\n<</Length ${streamLen}>>\nstream\n`;
   const o6f  = '\nendstream\nendobj\n';
 
-  const parts = [hdr, o1, o2, o3, o4, o5, o6h];
   const offsets = [];
   let pos = 0;
-  // o1..o5 are plain strings; o6 has a buffer in the middle
   [o1, o2, o3, o4, o5].forEach((o, i) => {
     offsets[i] = pos + hdr.length;
     pos += o.length;
   });
-  offsets[5] = pos + hdr.length; // o6
+  offsets[5] = pos + hdr.length;
   pos += o6h.length + streamLen + o6f.length;
 
-  const xrefPos = hdr.length + [o1,o2,o3,o4,o5].reduce((a,o)=>a+o.length,0) + o6h.length + streamLen + o6f.length;
-  const xref = 'xref\n0 7\n0000000000 65535 f \n' +
-    offsets.map(o => String(o).padStart(10,'0') + ' 00000 n \n').join('');
+  const xrefPos = hdr.length + [o1,o2,o3,o4,o5].reduce((a, o) => a + o.length, 0) + o6h.length + streamLen + o6f.length;
+  const xref    = 'xref\n0 7\n0000000000 65535 f \n' +
+    offsets.map(o => String(o).padStart(10, '0') + ' 00000 n \n').join('');
   const trailer = `trailer\n<</Size 7/Root 1 0 R>>\nstartxref\n${xrefPos}\n%%EOF`;
 
-  const bufs = [
+  const pdf = Buffer.concat([
     Buffer.from(hdr + o1 + o2 + o3 + o4 + o5 + o6h, 'utf8'),
     streamBuf,
     Buffer.from(o6f + xref + trailer, 'utf8'),
-  ];
-  const pdf = Buffer.concat(bufs);
+  ]);
   res.set('Content-Type', 'application/pdf');
   res.set('Content-Length', pdf.length);
   res.send(pdf);
@@ -954,6 +1145,6 @@ app.listen(PORT, () => {
   console.log(`\n🟠 Shopee Mock API running on port ${PORT}`);
   console.log(`   Partner ID   : ${PARTNER_ID}`);
   console.log(`   Partner Key  : ${PARTNER_KEY}`);
-  console.log(`   Odoo base URL: ${ODOO_BASE_URL || '(not set)'}`);
+  console.log(`   Odoo base URL: ${ODOO_BASE_URL || '(not set — webhook delivery notifications disabled)'}`);
   console.log(`   Strict sig   : ${process.env.STRICT_SIG || 'false (demo mode)'}\n`);
 });
