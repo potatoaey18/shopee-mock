@@ -101,7 +101,7 @@ function buildPDF(lines) {
 
   const obj1 = '1 0 obj\n<</Type/Catalog/Pages 2 0 R>>\nendobj\n';
   const obj2 = '2 0 obj\n<</Type/Pages/Kids[3 0 R]/Count 1>>\nendobj\n';
-  const obj3 = '3 0 obj\n<</Type/Page/MediaBox[0 0 420 320]/Parent 2 0 R/Resources<</Font<</F1 4 0 R/F2 5 0 R>>>>>>\nendobj\n';
+  const obj3 = '3 0 obj\n<</Type/Page/MediaBox[0 0 420 320]/Parent 2 0 R/Contents 6 0 R/Resources<</Font<</F1 4 0 R/F2 5 0 R>>>>>>\nendobj\n';
   const obj4 = '4 0 obj\n<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>\nendobj\n';
   const obj5 = '5 0 obj\n<</Type/Font/Subtype/Type1/BaseFont/Helvetica-Bold>>\nendobj\n';
   const obj6 = `6 0 obj\n<</Length ${streamLen}>>\nstream\n${stream}\nendstream\nendobj\n`;
