@@ -246,7 +246,12 @@ let orderCounter = 4;
 // ─────────────────────────────────────────────────────────────────────
 app.get('/track/:tracking', (req, res) => {
   const { tracking } = req.params;
-  const order = DB.orders.find(o => o.tracking_no === tracking || DB.trackingNumbers[o.order_sn] === tracking);
+  const order = DB.orders.find(o => o.tracking_no === tracking || DB.trackingNumbers[o.order_sn] === tracking) 
+    || { 
+      order_sn: 'SHOPEE-ORDER', 
+      shipping_carrier: 'SPX Express',
+      recipient_address: { name: 'Customer', city: 'Manila', state: 'Metro Manila' },
+    };
   const statusSteps = ['Order Placed', 'Picked Up', 'In Transit', 'Out for Delivery', 'Delivered'];
   const currentStep = order && order.order_status === 'SHIPPED' ? 2 : order ? 1 : 0;
 
