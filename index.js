@@ -585,62 +585,102 @@ app.post('/api/demo/ship_order', (req, res) => {
 //  DEMO API — print label (from dashboard UI)
 // ─────────────────────────────────────────────────────────────────────
 app.get('/api/demo/print_label/:order_sn', (req, res) => {
+app.get('/api/demo/print_label/:order_sn', (req, res) => {
   const { order_sn } = req.params;
-  const order   = DB.orders.find(o => o.order_sn === order_sn);
+  const order    = DB.orders.find(o => o.order_sn === order_sn);
   const tracking = DB.trackingNumbers[order_sn] || 'N/A';
-  const recipient = order ? order.recipient_address.name : 'Unknown';
-  const address   = order ? order.recipient_address.full_address : '';
-  const carrier   = order ? order.shipping_carrier : 'SPX Express';
-  const items     = order ? order.item_list.map(i => `${i.item_name} x${i.model_quantity_purchased}`).join(', ') : '';
 
-  if (DB.labelStatus[order_sn] === 'PROCESSING') {
-    DB.labelStatus[order_sn] = 'READY';
-  }
+  if (!order) return res.status(404).send('Order not found');
 
-  const pdfContent = `%PDF-1.4
-1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
-2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
-3 0 obj<</Type/Page/MediaBox[0 0 420 320]/Parent 2 0 R/Resources<</Font<</F1 4 0 R>>>>>>endobj
-4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica-Bold>>endobj
-5 0 obj<</Length 420>>
-stream
-BT
-/F1 18 Tf
-30 285 Td (SHOPEE SHIPPING LABEL) Tj
-/F1 10 Tf
-0 -28 Td (Order No: ${order_sn}) Tj
-0 -16 Td (Tracking: ${tracking}) Tj
-0 -16 Td (Carrier: ${carrier}) Tj
-0 -22 Td (TO:) Tj
-/F1 12 Tf
-0 -16 Td (${recipient}) Tj
-/F1 9 Tf
-0 -14 Td (${address.substring(0, 58)}) Tj
-0 -12 Td (${address.substring(58, 116)}) Tj
-0 -22 Td (ITEMS:) Tj
-0 -14 Td (${items.substring(0, 60)}) Tj
-0 -12 Td (${items.substring(60, 120)}) Tj
-0 -20 Td ([MOCK LABEL - Shopee Demo Environment]) Tj
-ET
-endstream
-endobj
-xref
-0 6
-0000000000 65535 f
-0000000009 00000 n
-0000000058 00000 n
-0000000115 00000 n
-0000000270 00000 n
-0000000360 00000 n
-trailer<</Size 6/Root 1 0 R>>
-startxref
-830
-%%EOF`;
-
+  if (DB.labelStatus[order_sn] === 'PROCESSING') DB.labelStatus[order_sn] = 'READY';
   DB.labelStatus[order_sn] = 'STORED';
-  res.set('Content-Type', 'application/pdf');
-  res.set('Content-Disposition', `inline; filename="Label_${order_sn}.pdf"`);
-  res.send(Buffer.from(pdfContent));
+
+  const items = order.item_list.map(i =>
+    `<tr><td>${i.item_name}</td><td style="text-align:center">${i.model_quantity_purchased}</td><td style="text-align:right">&#8369;${i.model_discounted_price}</td></tr>`
+  ).join('');
+
+  res.send(`<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Shipping Label — ${order_sn}</title>
+<style>
+  @media print { .no-print { display: none } body { margin: 0 } }
+  body { font-family: Arial, sans-serif; background: #f0f0f0; display: flex; justify-content: center; padding: 20px }
+  .label { background: white; width: 400px; border: 2px solid #000; padding: 0; font-size: 12px }
+  .label-header { background: #EE4D2D; color: white; padding: 10px 14px; display: flex; align-items: center; gap: 10px }
+  .label-header .logo { font-size: 22px; font-weight: 900; background: white; color: #EE4D2D; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border-radius: 6px }
+  .label-header .title { font-size: 14px; font-weight: 700 }
+  .label-header .sub { font-size: 10px; opacity: .85 }
+  .section { padding: 10px 14px; border-bottom: 1px dashed #ccc }
+  .section:last-child { border-bottom: none }
+  .label-row { display: flex; justify-content: space-between; margin-bottom: 4px }
+  .label-key { color: #888; font-size: 10px; text-transform: uppercase; letter-spacing: .5px }
+  .label-val { font-weight: 700; font-size: 13px }
+  .tracking-box { background: #000; color: white; text-align: center; padding: 10px; letter-spacing: 3px; font-size: 16px; font-weight: 900; margin: 8px 0; border-radius: 4px }
+  .to-section { background: #fff8f6; border: 1px solid #fde0d8; border-radius: 6px; padding: 8px 10px; margin-top: 4px }
+  .to-name { font-size: 15px; font-weight: 700; margin-bottom: 2px }
+  .to-addr { font-size: 11px; color: #555; line-height: 1.5 }
+  .items-table { width: 100%; border-collapse: collapse; font-size: 11px }
+  .items-table th { background: #f5f5f5; padding: 5px 6px; text-align: left; font-size: 10px; color: #888; text-transform: uppercase }
+  .items-table td { padding: 5px 6px; border-bottom: 1px solid #f0f0f0 }
+  .barcode { text-align: center; padding: 8px; font-family: monospace; font-size: 11px; letter-spacing: 2px; color: #555 }
+  .mock-badge { background: #fffbeb; border-top: 1px solid #fcd34d; text-align: center; padding: 6px; font-size: 10px; color: #92400e }
+  .print-btn { display: block; margin: 16px auto; padding: 10px 28px; background: #EE4D2D; color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 700; cursor: pointer }
+  .print-btn:hover { background: #d94426 }
+</style>
+</head>
+<body>
+<div>
+  <button class="print-btn no-print" onclick="window.print()">&#128438; Print Label</button>
+  <div class="label">
+    <div class="label-header">
+      <div class="logo">S</div>
+      <div>
+        <div class="title">Shopee Express</div>
+        <div class="sub">Shipping Label &mdash; Demo Environment</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="label-key">Order Number</div>
+      <div class="label-val">${order_sn}</div>
+      <div class="tracking-box">${tracking}</div>
+      <div class="label-row">
+        <div><div class="label-key">Carrier</div><div style="font-weight:600">${order.shipping_carrier}</div></div>
+        <div style="text-align:right"><div class="label-key">Amount</div><div style="font-weight:600">&#8369;${order.total_amount}</div></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="label-key">Deliver To</div>
+      <div class="to-section">
+        <div class="to-name">${order.recipient_address.name}</div>
+        <div class="to-addr">
+          ${order.recipient_address.phone}<br>
+          ${order.recipient_address.full_address}
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="label-key" style="margin-bottom:6px">Items</div>
+      <table class="items-table">
+        <thead><tr><th>Product</th><th style="text-align:center">Qty</th><th style="text-align:right">Price</th></tr></thead>
+        <tbody>${items}</tbody>
+      </table>
+    </div>
+
+    <div class="barcode">
+      ||||| ${tracking} |||||<br>
+      ${order_sn}
+    </div>
+
+    <div class="mock-badge">&#x1F7E0; Shopee Mock API &mdash; For demo purposes only</div>
+  </div>
+</div>
+</body>
+</html>`);
 });
 
 // ─────────────────────────────────────────────────────────────────────
