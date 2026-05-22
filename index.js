@@ -253,7 +253,7 @@ app.get('/track/:tracking', (req, res) => {
       recipient_address: { name: 'Customer', city: 'Manila', state: 'Metro Manila' },
     };
   const statusSteps = ['Order Placed', 'Picked Up', 'In Transit', 'Out for Delivery', 'Delivered'];
-  const currentStep = order && order.order_status === 'SHIPPED' ? 2 : order ? 1 : 0;
+  const currentStep = tracking.startsWith('PHSPX') ? 2 : 1;
 
   res.send(`<!DOCTYPE html>
 <html lang="en">
