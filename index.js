@@ -1,6 +1,6 @@
 /**
  * ╔══════════════════════════════════════════════════════════════╗
- * ║  SHOPEE MOCK API SERVER  v4.0                                ║
+ * ║  SHOPEE MOCK API SERVER  v4.1                                ║
  * ║  Mimics Shopee Open Platform API for Odoo integration demo   ║
  * ╚══════════════════════════════════════════════════════════════╝
  */
@@ -83,16 +83,21 @@ async function notifyOdooDelivered(order_sn) {
 function buildShippingLabelPDF(order, tracking) {
   const safe = s => String(s || '').replace(/[()\\]/g, c => '\\' + c);
   const addr = order.recipient_address;
-  const items = order.item_list.map(i =>
-    `${i.item_name.substring(0, 38)} x${i.model_quantity_purchased}`
-  ).join(' | ');
 
   // Simulate SPX routing codes from tracking number
-  const trkSuffix = tracking.slice(-4);
-  const routeZone = 'B-463-WGP-06';
-  const sortCode  = 'B-494-RLC-z1-06';
-  const hubCode   = 'C-02-MLMIG-02';
-  const dropCode  = 'D-01-DGT.2-LR';
+  const trkNum    = tracking.replace(/\D/g, '').slice(-6) || '000000';
+  const zoneNum   = parseInt(trkNum.slice(0, 2)) % 9 + 1;
+  const routeZone = `B-${400 + zoneNum * 7}-WGP-0${zoneNum % 6 + 1}`;
+  const sortCode  = `B-${494 + zoneNum}-RLC-z${zoneNum % 3 + 1}-0${zoneNum % 4 + 2}`;
+  const hubCode   = `C-0${(zoneNum % 3)+1}-MLMIG-0${(zoneNum % 5)+1}`;
+  const dropLetter = String.fromCharCode(65 + (zoneNum % 4));
+  const dropCode  = `${dropLetter}-0${(zoneNum % 3)+1}-DGT.${(zoneNum % 4)+1}-LR`;
+  const boxL      = String(5 + (zoneNum % 5)).padStart(2,'0');
+  const boxR      = String(3 + (zoneNum % 7)).padStart(2,'0');
+  const hubZoneL  = String.fromCharCode(70 + (zoneNum % 3));
+  const hubZoneR  = String.fromCharCode(82 + (zoneNum % 2));
+
+  const totalQty  = order.item_list.reduce((s,i)=>s+i.model_quantity_purchased,0);
 
   const streamLines = [
     // Header bar
@@ -101,10 +106,10 @@ function buildShippingLabelPDF(order, tracking) {
     // Route zone large
     '/F2 16 Tf 30 290 Td (' + safe(routeZone) + ') Tj',
     // Boxes top-right
-    '/F2 18 Tf 310 295 Td (06) Tj',
-    '/F1 8 Tf 310 282 Td (F) Tj',
-    '/F2 18 Tf 350 295 Td (06) Tj',
-    '/F1 8 Tf 350 282 Td (R) Tj',
+    '/F2 18 Tf 310 295 Td (' + safe(boxL) + ') Tj',
+    '/F1 8 Tf 310 282 Td (' + safe(hubZoneL) + ') Tj',
+    '/F2 18 Tf 350 295 Td (' + safe(boxR) + ') Tj',
+    '/F1 8 Tf 350 282 Td (' + safe(hubZoneR) + ') Tj',
     // Sort code
     '/F1 8 Tf 30 275 Td (RTS Sort Code: ' + safe(sortCode) + ') Tj',
     '/F1 8 Tf 30 263 Td (' + safe(hubCode) + ') Tj',
@@ -125,7 +130,7 @@ function buildShippingLabelPDF(order, tracking) {
     '/F2 10 Tf 60 133 Td (' + safe(DB.shop.shop_name) + ') Tj',
     '/F1 8 Tf 60 121 Td (Metro Manila, PH) Tj',
     // Bottom info
-    '/F1 8 Tf 30 100 Td (Product Quantity: ' + safe(order.item_list.reduce((s,i)=>s+i.model_quantity_purchased,0)) + ') Tj',
+    '/F1 8 Tf 30 100 Td (Product Quantity: ' + safe(totalQty) + ') Tj',
     '/F1 8 Tf 30 88 Td (Weight: 1,000 g) Tj',
     // Delivery attempt
     '/F2 8 Tf 30 70 Td (Delivery Attempt) Tj',
@@ -514,6 +519,8 @@ tr:hover td{background:#fffaf9}
 .sc-form-group input,.sc-form-group select{padding:6px 10px;border:1px solid #ddd;border-radius:4px;font-size:12px;min-width:120px}
 .sc-toast{position:fixed;bottom:24px;right:24px;background:#333;color:white;padding:10px 18px;border-radius:6px;font-size:12px;font-weight:500;opacity:0;transition:opacity .25s;z-index:9999;max-width:300px}
 .sc-toast.show{opacity:1}
+/* Hidden rows support */
+tr.hidden-row{display:none}
 </style>
 </head>
 <body>
@@ -557,11 +564,11 @@ ${!ODOO_BASE_URL ? `<div class="sc-warn-box">⚠️ <strong>ODOO_BASE_URL</stron
     <div class="sc-card"><div class="sc-card-label">Completed</div><div class="sc-card-value green">${completedCount}</div></div>
   </div>
 
-  <div class="sc-tabs">
-    <div class="sc-tab active" onclick="filterOrders('all',this)">All</div>
-    <div class="sc-tab" onclick="filterOrders('toship',this)">To Ship${toShipCount > 0 ? `<span class="sc-tab-count">${toShipCount}</span>` : ''}</div>
-    <div class="sc-tab" onclick="filterOrders('shipping',this)">Shipping</div>
-    <div class="sc-tab" onclick="filterOrders('completed',this)">Completed (${completedCount})</div>
+  <div class="sc-tabs" id="order-tabs">
+    <div class="sc-tab active" data-filter="all" onclick="filterOrders('all',this)">All</div>
+    <div class="sc-tab" data-filter="toship" onclick="filterOrders('toship',this)">To Ship${toShipCount > 0 ? `<span class="sc-tab-count">${toShipCount}</span>` : ''}</div>
+    <div class="sc-tab" data-filter="shipping" onclick="filterOrders('shipping',this)">Shipping${shippingCount > 0 ? `<span class="sc-tab-count">${shippingCount}</span>` : ''}</div>
+    <div class="sc-tab" data-filter="completed" onclick="filterOrders('completed',this)">Completed (${completedCount})</div>
   </div>
 
   <div class="sc-info-box">
@@ -671,9 +678,6 @@ ${!ODOO_BASE_URL ? `<div class="sc-warn-box">⚠️ <strong>ODOO_BASE_URL</stron
   <div class="sc-breadcrumb">Home > <span>My Products</span></div>
   <div class="sc-page-header">
     <div class="sc-page-title">My Products</div>
-    <div style="display:flex;gap:8px">
-      <button class="sc-btn sc-btn-primary">+ Add a New Product</button>
-    </div>
   </div>
 
   <div class="sc-summary">
@@ -740,12 +744,13 @@ ${!ODOO_BASE_URL ? `<div class="sc-warn-box">⚠️ <strong>ODOO_BASE_URL</stron
 </div>
 </div>
 
-<div class="sc-mock-bar">🟠 Shopee Mock API v4.0 — Demo environment · Partner ID: ${PARTNER_ID}</div>
+<div class="sc-mock-bar">🟠 Shopee Mock API v4.1 — Demo environment · Partner ID: ${PARTNER_ID}</div>
 <div class="sc-toast" id="sc-toast"></div>
 
 <script>
 const DELIVERY_STEPS = ${JSON.stringify(DELIVERY_STEPS)};
 
+// ── Tab switching (sidebar) ──
 function switchTab(t) {
   document.getElementById('tab-orders').style.display   = t === 'orders'   ? 'block' : 'none';
   document.getElementById('tab-products').style.display = t === 'products' ? 'block' : 'none';
@@ -753,12 +758,58 @@ function switchTab(t) {
   event.target.classList.add('active');
 }
 
+// ── Order tab filter ──
+let currentFilter = 'all';
+
 function filterOrders(type, el) {
-  document.querySelectorAll('#tab-orders .sc-tab').forEach(t => t.classList.remove('active'));
+  currentFilter = type;
+
+  // Update active tab
+  document.querySelectorAll('#order-tabs .sc-tab').forEach(t => t.classList.remove('active'));
   el.classList.add('active');
+
+  // Show/hide rows
+  document.querySelectorAll('#orders-tbody tr').forEach(row => {
+    const rowFilter = row.getAttribute('data-filter') || '';
+    if (type === 'all') {
+      row.style.display = '';
+    } else {
+      row.style.display = rowFilter === type ? '' : 'none';
+    }
+  });
+
+  // Show "no results" message if all hidden
+  updateEmptyState();
 }
 
-function searchOrders() {}
+function updateEmptyState() {
+  const tbody = document.getElementById('orders-tbody');
+  const visibleRows = Array.from(tbody.querySelectorAll('tr')).filter(r => r.style.display !== 'none');
+  let emptyRow = tbody.querySelector('tr.empty-filter-row');
+  if (visibleRows.length === 0) {
+    if (!emptyRow) {
+      emptyRow = document.createElement('tr');
+      emptyRow.className = 'empty-filter-row';
+      emptyRow.innerHTML = '<td colspan="8" style="text-align:center;padding:32px;color:#bbb">No orders in this category.</td>';
+      tbody.appendChild(emptyRow);
+    }
+  } else {
+    if (emptyRow) emptyRow.remove();
+  }
+}
+
+function searchOrders() {
+  const q = document.getElementById('order-search-input').value.trim().toLowerCase();
+  document.querySelectorAll('#orders-tbody tr:not(.empty-filter-row)').forEach(row => {
+    if (!q) {
+      const filterKey = row.getAttribute('data-filter') || '';
+      row.style.display = (currentFilter === 'all' || filterKey === currentFilter) ? '' : 'none';
+    } else {
+      row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
+    }
+  });
+  updateEmptyState();
+}
 
 function toast(msg, dur=3500) {
   const el = document.getElementById('sc-toast');
@@ -903,7 +954,7 @@ app.post('/api/demo/advance_delivery', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  DEMO — print label (SPX-style HTML, browser-friendly)
+//  DEMO — print label (HTML, browser-friendly)
 // ─────────────────────────────────────────────────────────────────────
 app.get('/api/demo/print_label/:order_sn', (req, res) => {
   const { order_sn } = req.params;
@@ -915,7 +966,6 @@ app.get('/api/demo/print_label/:order_sn', (req, res) => {
   const addr     = order.recipient_address;
   const totalQty = order.item_list.reduce((s, i) => s + i.model_quantity_purchased, 0);
 
-  // Deterministic routing codes derived from order/tracking
   const trkNum   = tracking.replace(/\D/g, '').slice(-6) || '000000';
   const zoneNum  = parseInt(trkNum.slice(0, 2)) % 9 + 1;
   const routeZone = `B-${400 + zoneNum * 7}-WGP-0${zoneNum % 6 + 1}`;
@@ -923,17 +973,10 @@ app.get('/api/demo/print_label/:order_sn', (req, res) => {
   const hubCode   = `C-0${(zoneNum % 3)+1}-MLMIG-0${(zoneNum % 5)+1}`;
   const dropLetter = String.fromCharCode(65 + (zoneNum % 4));
   const dropCode  = `${dropLetter}-0${(zoneNum % 3)+1}-DGT.${(zoneNum % 4)+1}-LR`;
-  const hubZoneL  = String.fromCharCode(70 + (zoneNum % 3)); // F, G, H
-  const hubZoneR  = String.fromCharCode(82 + (zoneNum % 2)); // R, S
+  const hubZoneL  = String.fromCharCode(70 + (zoneNum % 3));
+  const hubZoneR  = String.fromCharCode(82 + (zoneNum % 2));
   const boxL      = String(5 + (zoneNum % 5)).padStart(2,'0');
   const boxR      = String(3 + (zoneNum % 7)).padStart(2,'0');
-
-  // QR code data URI (simple black square placeholder with pattern)
-  const qrSize = 80;
-
-  const itemRows = order.item_list.map(i =>
-    `<tr><td style="padding:2px 4px;font-size:11px">${i.item_name}</td><td style="padding:2px 4px;font-size:11px;text-align:center">${i.model_quantity_purchased}</td></tr>`
-  ).join('');
 
   res.send(`<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><title>Label — ${order_sn}</title>
@@ -943,8 +986,6 @@ app.get('/api/demo/print_label/:order_sn', (req, res) => {
 body{font-family:Arial,Helvetica,sans-serif;background:#e8e8e8;display:flex;flex-direction:column;align-items:center;padding:20px;min-height:100vh}
 .print-btn{margin-bottom:16px;padding:10px 28px;background:#EE4D2D;color:white;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;letter-spacing:.5px}
 .label{background:white;width:420px;border:1.5px solid #111;font-family:Arial,Helvetica,sans-serif;position:relative}
-
-/* TOP STRIP */
 .top-strip{display:flex;align-items:stretch;border-bottom:1.5px solid #111;min-height:90px}
 .top-left{display:flex;flex-direction:column;justify-content:space-between;border-right:1.5px solid #111;padding:6px 8px;min-width:100px;flex:0 0 auto}
 .spx-logo{display:flex;align-items:center;gap:5px;margin-bottom:4px}
@@ -954,25 +995,17 @@ body{font-family:Arial,Helvetica,sans-serif;background:#e8e8e8;display:flex;flex
 .route-zone{font-size:18px;font-weight:900;letter-spacing:1px;line-height:1}
 .sort-code{font-size:8px;color:#333;margin-top:3px;line-height:1.5}
 .hub-code{font-size:8px;color:#333}
-.top-right{display:flex;gap:0;align-items:stretch;flex-shrink:0}
 .box-cell{border-left:1.5px solid #111;width:42px;display:flex;flex-direction:column;align-items:center;justify-content:center}
 .box-num{font-size:26px;font-weight:900;line-height:1}
 .box-letter{font-size:8px;font-weight:700;margin-top:2px;color:#333}
-.drop-code{font-size:14px;font-weight:900;line-height:1.2;text-align:right;padding:6px 8px;display:flex;align-items:center;justify-content:flex-end}
-
-/* ORDER ID ROW */
 .order-row{display:flex;align-items:center;justify-content:space-between;border-bottom:1.5px solid #111;padding:4px 8px;background:#f9f9f9}
 .order-label{font-size:8px;color:#555}
 .order-id{font-size:11px;font-weight:700;font-family:'Courier New',monospace;letter-spacing:.5px}
 .parcel-badge{font-size:8px;background:#111;color:white;padding:2px 6px;font-weight:700;border-radius:1px}
-
-/* BARCODE */
 .barcode-row{border-bottom:1.5px solid #111;padding:6px 8px;text-align:center}
 .barcode-bars{display:flex;justify-content:center;align-items:flex-end;gap:0;height:36px;margin-bottom:3px;overflow:hidden}
 .barcode-bars span{display:inline-block;background:#111;height:100%}
 .barcode-num{font-size:10px;font-weight:700;font-family:'Courier New',monospace;letter-spacing:2px}
-
-/* BUYER / SELLER */
 .party-row{display:flex;border-bottom:1.5px solid #111;min-height:80px}
 .party-label{writing-mode:vertical-rl;text-orientation:mixed;transform:rotate(180deg);font-size:9px;font-weight:700;letter-spacing:2px;border-right:1.5px solid #111;padding:6px 4px;text-align:center;flex-shrink:0;background:#f5f5f5}
 .party-content{flex:1;padding:6px 10px;font-size:11px;line-height:1.5}
@@ -980,41 +1013,24 @@ body{font-family:Arial,Helvetica,sans-serif;background:#e8e8e8;display:flex;flex
 .party-address{font-size:10px;color:#333;margin-top:2px;line-height:1.4}
 .party-meta{display:flex;justify-content:space-between;margin-top:6px;font-size:10px;color:#555}
 .party-zip{font-size:12px;font-weight:700}
-
-/* BOTTOM */
 .bottom-strip{display:flex;align-items:stretch;min-height:70px;border-bottom:1.5px solid #111}
 .bottom-left{flex:0 0 140px;border-right:1.5px solid #111;padding:6px 8px;font-size:10px}
-.bottom-left .qty-weight{line-height:1.8}
-.attempt-boxes{display:flex;align-items:center;margin-top:6px;gap:0}
-.attempt-label{font-size:8px;font-weight:700;margin-right:4px;color:#333}
 .attempt-cell{width:18px;height:18px;border:1px solid #111;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;margin-right:2px}
 .bottom-qr{flex:0 0 90px;border-right:1.5px solid #111;display:flex;align-items:center;justify-content:center;padding:6px}
 .bottom-right{flex:1;display:flex;align-items:center;justify-content:center;padding:6px 8px}
-.return-box{text-align:center}
-.return-label{font-size:8px;font-weight:700;margin-bottom:4px}
-
-/* TAGLINE */
 .tagline-row{padding:6px 8px;text-align:center;background:#fff}
 .tagline-main{font-size:13px;font-weight:900;letter-spacing:.5px;color:#EE4D2D;text-transform:uppercase}
 .tagline-sub{font-size:8px;letter-spacing:1px;color:#111;margin-top:1px;text-transform:uppercase;font-weight:700;border:1.5px solid #111;display:inline-block;padding:2px 8px;margin-top:3px}
-
-/* MOCK */
 .mock-footer{background:#fffbeb;border-top:1px solid #fcd34d;text-align:center;padding:5px;font-size:9px;color:#92400e}
 </style>
 </head>
 <body>
-
 <button class="print-btn no-print" onclick="window.print()">🖨 Print Label</button>
-
 <div class="label">
-
-  <!-- TOP STRIP -->
   <div class="top-strip">
     <div class="top-left">
       <div>
-        <div class="spx-logo">
-          <div class="spx-logo-box">SPX</div>
-        </div>
+        <div class="spx-logo"><div class="spx-logo-box">SPX</div></div>
         <div class="spx-sub">EXPRESS</div>
       </div>
       <div style="font-size:7px;color:#888;margin-top:auto">1 of 1</div>
@@ -1026,145 +1042,83 @@ body{font-family:Arial,Helvetica,sans-serif;background:#e8e8e8;display:flex;flex
     </div>
     <div style="display:flex;flex-direction:column;border-left:1.5px solid #111">
       <div style="display:flex;flex:1">
-        <div class="box-cell">
-          <div class="box-num">${boxL}</div>
-          <div class="box-letter">${hubZoneL}</div>
-        </div>
-        <div class="box-cell">
-          <div class="box-num">${boxR}</div>
-          <div class="box-letter">${hubZoneR}</div>
-        </div>
+        <div class="box-cell"><div class="box-num">${boxL}</div><div class="box-letter">${hubZoneL}</div></div>
+        <div class="box-cell"><div class="box-num">${boxR}</div><div class="box-letter">${hubZoneR}</div></div>
       </div>
       <div style="border-top:1.5px solid #111;padding:6px 8px;text-align:right">
         <div style="font-size:16px;font-weight:900;line-height:1.2">${dropCode}</div>
       </div>
     </div>
   </div>
-
-  <!-- ORDER ID ROW -->
   <div class="order-row">
     <div><span class="order-label">Order ID: </span><span class="order-id">${order_sn}</span></div>
     <div class="parcel-badge">COD</div>
   </div>
-
-  <!-- BARCODE -->
   <div class="barcode-row">
     <div class="barcode-bars" id="bc-bars"></div>
     <div class="barcode-num">${tracking}</div>
   </div>
-
-  <!-- BUYER -->
   <div class="party-row">
     <div class="party-label">BUYER</div>
     <div class="party-content">
       <div class="party-name">${addr.name}</div>
       <div class="party-address">${addr.full_address}</div>
-      <div class="party-meta">
-        <span>${addr.city}</span>
-        <span>${addr.state}</span>
-        <span class="party-zip">${addr.zipcode}</span>
-      </div>
+      <div class="party-meta"><span>${addr.city}</span><span>${addr.state}</span><span class="party-zip">${addr.zipcode}</span></div>
     </div>
   </div>
-
-  <!-- SELLER -->
   <div class="party-row">
     <div class="party-label">SELLER</div>
     <div class="party-content">
       <div class="party-name">${DB.shop.shop_name}</div>
       <div class="party-address">Metro Manila, Philippines</div>
-      <div class="party-meta">
-        <span>Mandaluyong City</span>
-        <span>Metro Manila</span>
-        <span class="party-zip">1550</span>
-      </div>
+      <div class="party-meta"><span>Mandaluyong City</span><span>Metro Manila</span><span class="party-zip">1550</span></div>
     </div>
   </div>
-
-  <!-- BOTTOM STRIP -->
   <div class="bottom-strip">
     <div class="bottom-left">
-      <div class="qty-weight">
+      <div style="line-height:1.8">
         <div>Product Quantity: <strong>${totalQty}</strong></div>
         <div>Weight: <strong>1,000 g</strong></div>
       </div>
-      <div class="attempt-boxes" style="margin-top:6px">
+      <div style="display:flex;align-items:center;margin-top:6px">
         <div style="font-size:8px;font-weight:700;margin-right:4px">Delivery<br>Attempt</div>
-        <div class="attempt-cell">1</div>
-        <div class="attempt-cell">2</div>
-        <div class="attempt-cell">3</div>
+        <div class="attempt-cell">1</div><div class="attempt-cell">2</div><div class="attempt-cell">3</div>
       </div>
     </div>
     <div class="bottom-qr">
       <svg width="72" height="72" viewBox="0 0 21 21" xmlns="http://www.w3.org/2000/svg">
-        <!-- QR code pattern approximation -->
         <rect width="21" height="21" fill="white"/>
-        <!-- Top-left finder -->
-        <rect x="1" y="1" width="7" height="7" fill="black"/>
-        <rect x="2" y="2" width="5" height="5" fill="white"/>
-        <rect x="3" y="3" width="3" height="3" fill="black"/>
-        <!-- Top-right finder -->
-        <rect x="13" y="1" width="7" height="7" fill="black"/>
-        <rect x="14" y="2" width="5" height="5" fill="white"/>
-        <rect x="15" y="3" width="3" height="3" fill="black"/>
-        <!-- Bottom-left finder -->
-        <rect x="1" y="13" width="7" height="7" fill="black"/>
-        <rect x="2" y="14" width="5" height="5" fill="white"/>
-        <rect x="3" y="15" width="3" height="3" fill="black"/>
-        <!-- Data modules (deterministic from tracking) -->
-        <rect x="9" y="1" width="1" height="1" fill="black"/>
-        <rect x="11" y="1" width="1" height="1" fill="black"/>
-        <rect x="9" y="3" width="2" height="1" fill="black"/>
-        <rect x="8" y="5" width="1" height="1" fill="black"/>
-        <rect x="10" y="5" width="1" height="2" fill="black"/>
-        <rect x="12" y="4" width="1" height="1" fill="black"/>
-        <rect x="9" y="7" width="3" height="1" fill="black"/>
-        <rect x="8" y="9" width="1" height="3" fill="black"/>
-        <rect x="10" y="9" width="2" height="1" fill="black"/>
-        <rect x="9" y="11" width="1" height="1" fill="black"/>
-        <rect x="11" y="10" width="1" height="2" fill="black"/>
-        <rect x="13" y="9" width="1" height="1" fill="black"/>
-        <rect x="14" y="10" width="2" height="1" fill="black"/>
-        <rect x="13" y="11" width="3" height="2" fill="black"/>
-        <rect x="16" y="9" width="2" height="3" fill="black"/>
-        <rect x="19" y="9" width="1" height="1" fill="black"/>
-        <rect x="18" y="11" width="2" height="1" fill="black"/>
-        <rect x="9" y="13" width="2" height="1" fill="black"/>
-        <rect x="12" y="13" width="1" height="3" fill="black"/>
-        <rect x="14" y="14" width="2" height="1" fill="black"/>
-        <rect x="17" y="13" width="1" height="1" fill="black"/>
-        <rect x="16" y="15" width="3" height="1" fill="black"/>
-        <rect x="9" y="16" width="1" height="2" fill="black"/>
-        <rect x="11" y="17" width="2" height="1" fill="black"/>
-        <rect x="14" y="17" width="1" height="3" fill="black"/>
-        <rect x="16" y="18" width="2" height="1" fill="black"/>
-        <rect x="19" y="17" width="1" height="2" fill="black"/>
+        <rect x="1" y="1" width="7" height="7" fill="black"/><rect x="2" y="2" width="5" height="5" fill="white"/><rect x="3" y="3" width="3" height="3" fill="black"/>
+        <rect x="13" y="1" width="7" height="7" fill="black"/><rect x="14" y="2" width="5" height="5" fill="white"/><rect x="15" y="3" width="3" height="3" fill="black"/>
+        <rect x="1" y="13" width="7" height="7" fill="black"/><rect x="2" y="14" width="5" height="5" fill="white"/><rect x="3" y="15" width="3" height="3" fill="black"/>
+        <rect x="9" y="1" width="1" height="1" fill="black"/><rect x="11" y="1" width="1" height="1" fill="black"/><rect x="9" y="3" width="2" height="1" fill="black"/>
+        <rect x="8" y="5" width="1" height="1" fill="black"/><rect x="10" y="5" width="1" height="2" fill="black"/><rect x="12" y="4" width="1" height="1" fill="black"/>
+        <rect x="9" y="7" width="3" height="1" fill="black"/><rect x="8" y="9" width="1" height="3" fill="black"/><rect x="10" y="9" width="2" height="1" fill="black"/>
+        <rect x="9" y="11" width="1" height="1" fill="black"/><rect x="11" y="10" width="1" height="2" fill="black"/><rect x="13" y="9" width="1" height="1" fill="black"/>
+        <rect x="14" y="10" width="2" height="1" fill="black"/><rect x="13" y="11" width="3" height="2" fill="black"/><rect x="16" y="9" width="2" height="3" fill="black"/>
+        <rect x="19" y="9" width="1" height="1" fill="black"/><rect x="18" y="11" width="2" height="1" fill="black"/><rect x="9" y="13" width="2" height="1" fill="black"/>
+        <rect x="12" y="13" width="1" height="3" fill="black"/><rect x="14" y="14" width="2" height="1" fill="black"/><rect x="17" y="13" width="1" height="1" fill="black"/>
+        <rect x="16" y="15" width="3" height="1" fill="black"/><rect x="9" y="16" width="1" height="2" fill="black"/><rect x="11" y="17" width="2" height="1" fill="black"/>
+        <rect x="14" y="17" width="1" height="3" fill="black"/><rect x="16" y="18" width="2" height="1" fill="black"/><rect x="19" y="17" width="1" height="2" fill="black"/>
         <rect x="9" y="19" width="3" height="1" fill="black"/>
       </svg>
     </div>
     <div class="bottom-right">
-      <div class="return-box">
-        <div class="return-label">Return Attempt</div>
+      <div style="text-align:center">
+        <div style="font-size:8px;font-weight:700;margin-bottom:4px">Return Attempt</div>
         <div style="display:flex;gap:2px;justify-content:center">
-          <div class="attempt-cell">1</div>
-          <div class="attempt-cell">2</div>
-          <div class="attempt-cell">3</div>
+          <div class="attempt-cell">1</div><div class="attempt-cell">2</div><div class="attempt-cell">3</div>
         </div>
       </div>
     </div>
   </div>
-
-  <!-- TAGLINE -->
   <div class="tagline-row">
     <div class="tagline-main">Ang Dali-Dali sa Shopee</div>
     <div><span class="tagline-sub">With On-Time Delivery Guarantee</span></div>
   </div>
-
   <div class="mock-footer">🟠 Shopee Mock API — Demo label only · Not a real SPX shipment</div>
 </div>
-
 <script>
-// Generate deterministic barcode bars from tracking number
 (function() {
   const trk = '${tracking}';
   const container = document.getElementById('bc-bars');
@@ -1391,16 +1345,30 @@ app.post('/api/v2/logistics/init_shipment', requireAuth, (req, res) => {
 app.post('/api/v2/logistics/create_shipping_document', requireAuth, (req, res) => {
   const { order_list } = req.body;
   const result_list = (order_list || []).map(o => {
-    DB.labelStatus[o.order_sn] = 'PROCESSING';
-    return { order_sn: o.order_sn, status: 'PROCESSING', fail_error: '', fail_message: '' };
+    // Auto-assign tracking if not yet set (so labels are always available)
+    if (!DB.trackingNumbers[o.order_sn]) {
+      DB.trackingNumbers[o.order_sn] = 'PHSPX' + Date.now();
+      const order = DB.orders.find(ord => ord.order_sn === o.order_sn);
+      if (order) { order.tracking_no = DB.trackingNumbers[o.order_sn]; }
+    }
+    DB.labelStatus[o.order_sn] = 'READY';
+    return { order_sn: o.order_sn, status: 'READY', fail_error: '', fail_message: '' };
   });
   res.json({ error: '', message: '', request_id: rid(), response: { result_list } });
 });
 
 function handleDocResult(order_list) {
   return order_list.map(o => {
-    if (DB.labelStatus[o.order_sn] === 'PROCESSING') DB.labelStatus[o.order_sn] = 'READY';
-    return { order_sn: o.order_sn, status: DB.labelStatus[o.order_sn] || 'READY', fail_error: '', fail_message: '' };
+    // Auto-assign tracking if missing
+    if (!DB.trackingNumbers[o.order_sn]) {
+      DB.trackingNumbers[o.order_sn] = 'PHSPX' + Date.now();
+      const order = DB.orders.find(ord => ord.order_sn === o.order_sn);
+      if (order) { order.tracking_no = DB.trackingNumbers[o.order_sn]; }
+    }
+    if (!DB.labelStatus[o.order_sn] || DB.labelStatus[o.order_sn] === 'PROCESSING') {
+      DB.labelStatus[o.order_sn] = 'READY';
+    }
+    return { order_sn: o.order_sn, status: 'READY', fail_error: '', fail_message: '' };
   });
 }
 
@@ -1413,40 +1381,54 @@ app.get('/api/v2/logistics/get_shipping_document_result', requireAuth, (req, res
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  download_shipping_document — JSON envelope for Odoo
+//  download_shipping_document — returns PDF base64 in JSON envelope
 // ─────────────────────────────────────────────────────────────────────
 app.post('/api/v2/logistics/download_shipping_document', requireAuth, (req, res) => {
   const order_list = req.body.order_list || [];
-  const order_sn   = order_list[0]?.order_sn || 'UNKNOWN';
-  const order      = DB.orders.find(o => o.order_sn === order_sn);
-  const tracking   = DB.trackingNumbers[order_sn] || 'N/A';
-  if (!order) return res.json({ error: 'order_not_found', message: `Order ${order_sn} not found.`, request_id: rid(), response: {} });
-
-  if (DB.labelStatus[order_sn]) DB.labelStatus[order_sn] = 'STORED';
-
-  const pdfBuffer  = buildShippingLabelPDF(order, tracking);
-  const pdfBase64  = pdfBuffer.toString('base64');
-
-  if (req.query.raw === '1') {
-    res.set('Content-Type', 'application/pdf');
-    res.set('Content-Disposition', `inline; filename="label_${order_sn}.pdf"`);
-    return res.send(pdfBuffer);
+  if (!order_list.length) {
+    return res.json({ error: 'missing_order_list', message: 'order_list is required.', request_id: rid(), response: {} });
   }
+
+  const result_list = order_list.map(item => {
+    const order_sn = item.order_sn;
+    const order    = DB.orders.find(o => o.order_sn === order_sn);
+
+    if (!order) {
+      return { order_sn, status: 'FAILED', file_type: 'PDF', file_data: '', fail_error: 'order_not_found', fail_message: `Order ${order_sn} not found.` };
+    }
+
+    // Ensure tracking number exists — generate one if missing
+    if (!DB.trackingNumbers[order_sn]) {
+      DB.trackingNumbers[order_sn] = 'PHSPX' + Date.now();
+      order.tracking_no = DB.trackingNumbers[order_sn];
+      console.log(`[LABEL] Auto-generated tracking for ${order_sn}: ${DB.trackingNumbers[order_sn]}`);
+    }
+
+    const tracking = DB.trackingNumbers[order_sn];
+
+    // Mark label as stored
+    DB.labelStatus[order_sn] = 'STORED';
+
+    const pdfBuffer = buildShippingLabelPDF(order, tracking);
+    const pdfBase64 = pdfBuffer.toString('base64');
+
+    console.log(`[LABEL] Generated PDF for ${order_sn} (${pdfBuffer.length} bytes, tracking: ${tracking})`);
+
+    return {
+      order_sn,
+      status:       'READY',
+      file_type:    'PDF',
+      file_data:    pdfBase64,
+      fail_error:   '',
+      fail_message: '',
+    };
+  });
 
   res.json({
     error:      '',
     message:    '',
     request_id: rid(),
-    response: {
-      result_list: [{
-        order_sn,
-        status:    'READY',
-        file_type: 'PDF',
-        file_data: pdfBase64,
-        fail_error:   '',
-        fail_message: '',
-      }],
-    },
+    response: { result_list },
   });
 });
 
@@ -1464,7 +1446,7 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`\n🟠 Shopee Mock API v4.0 running on port ${PORT}`);
+  console.log(`\n🟠 Shopee Mock API v4.1 running on port ${PORT}`);
   console.log(`   Partner ID   : ${PARTNER_ID}`);
   console.log(`   Partner Key  : ${PARTNER_KEY}`);
   console.log(`   Odoo base URL: ${ODOO_BASE_URL || '(not set)'}`);
