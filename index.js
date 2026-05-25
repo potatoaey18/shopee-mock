@@ -642,7 +642,8 @@ ${!ODOO_BASE_URL ? `<div class="sc-warn-box">⚠️ <strong>ODOO_BASE_URL</stron
             actionBtn = `<span class="sc-completed-tag">✓ Done</span>`;
           }
 
-          return `<tr>
+          const filterKey = isDelivered ? 'completed' : o.order_status === 'READY_TO_SHIP' ? 'toship' : isShipped ? 'shipping' : 'other';
+          return `<tr data-filter="${filterKey}">
             <td><input type="checkbox"></td>
             <td>
               <div class="sc-order-id">${o.order_sn}</div>
