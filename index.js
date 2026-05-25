@@ -123,79 +123,160 @@ async function notifyOdooDelivered(order_sn) {
   console.warn(`[WEBHOOK] ⚠️  All Odoo webhook paths failed for ${order_sn}.`);
 }
 
-// ── PDF GENERATOR — SPX-style label ──────────────────────────────────
 function buildShippingLabelPDF(order, tracking) {
-  const safe = s => String(s || '').replace(/[()\\]/g, c => '\\' + c);
-  const addr = order.recipient_address;
-
-  const trkNum    = tracking.replace(/\D/g, '').slice(-6) || '000000';
-  const zoneNum   = parseInt(trkNum.slice(0, 2)) % 9 + 1;
-  const routeZone = `B-${400 + zoneNum * 7}-WGP-0${zoneNum % 6 + 1}`;
-  const sortCode  = `B-${494 + zoneNum}-RLC-z${zoneNum % 3 + 1}-0${zoneNum % 4 + 2}`;
-  const hubCode   = `C-0${(zoneNum % 3)+1}-MLMIG-0${(zoneNum % 5)+1}`;
-  const dropLetter = String.fromCharCode(65 + (zoneNum % 4));
-  const dropCode  = `${dropLetter}-0${(zoneNum % 3)+1}-DGT.${(zoneNum % 4)+1}-LR`;
-  const boxL      = String(5 + (zoneNum % 5)).padStart(2,'0');
-  const boxR      = String(3 + (zoneNum % 7)).padStart(2,'0');
-  const hubZoneL  = String.fromCharCode(70 + (zoneNum % 3));
-  const hubZoneR  = String.fromCharCode(82 + (zoneNum % 2));
-
-  const totalQty  = order.item_list.reduce((s,i)=>s+i.model_quantity_purchased,0);
-
-  const streamLines = [
-    '/F2 11 Tf 30 310 Td (SPX EXPRESS) Tj',
-    '/F1 8 Tf 100 310 Td (Shipping Label) Tj',
-    '/F2 16 Tf 30 290 Td (' + safe(routeZone) + ') Tj',
-    '/F2 18 Tf 310 295 Td (' + safe(boxL) + ') Tj',
-    '/F1 8 Tf 310 282 Td (' + safe(hubZoneL) + ') Tj',
-    '/F2 18 Tf 350 295 Td (' + safe(boxR) + ') Tj',
-    '/F1 8 Tf 350 282 Td (' + safe(hubZoneR) + ') Tj',
-    '/F1 8 Tf 30 275 Td (RTS Sort Code: ' + safe(sortCode) + ') Tj',
-    '/F1 8 Tf 30 263 Td (' + safe(hubCode) + ') Tj',
-    '/F2 14 Tf 260 270 Td (' + safe(dropCode) + ') Tj',
-    '/F1 8 Tf 30 250 Td (Order ID: ' + safe(order.order_sn) + ') Tj',
-    '/F2 13 Tf 80 228 Td (' + safe(tracking) + ') Tj',
-    '/F2 9 Tf 30 210 Td (BUYER) Tj',
-    '/F2 10 Tf 60 198 Td (' + safe(addr.name) + ') Tj',
-    '/F1 8 Tf 60 186 Td (' + safe(addr.full_address.substring(0, 60)) + ') Tj',
-    '/F1 8 Tf 60 174 Td (' + safe(addr.city) + '   ' + safe(addr.state) + ') Tj',
-    '/F1 8 Tf 60 162 Td (' + safe(addr.zipcode) + ') Tj',
-    '/F2 9 Tf 30 145 Td (SELLER) Tj',
-    '/F2 10 Tf 60 133 Td (' + safe(DB.shop.shop_name) + ') Tj',
-    '/F1 8 Tf 60 121 Td (Metro Manila, PH) Tj',
-    '/F1 8 Tf 30 100 Td (Product Quantity: ' + safe(totalQty) + ') Tj',
-    '/F1 8 Tf 30 88 Td (Weight: 1,000 g) Tj',
-    '/F2 8 Tf 30 70 Td (Delivery Attempt) Tj',
-    '/F1 10 Tf 30 55 Td (1     2     3) Tj',
-    '/F2 8 Tf 260 70 Td (Return Attempt) Tj',
-    '/F1 10 Tf 260 55 Td (1     2     3) Tj',
-    '/F2 10 Tf 80 30 Td (ANG DALI-DALI SA SHOPEE) Tj',
-    '/F1 7 Tf 90 19 Td (WITH ON-TIME DELIVERY GUARANTEE) Tj',
-    '/F1 7 Tf 100 8 Td (MOCK LABEL — Shopee Demo Environment) Tj',
-  ].join('\n');
-
-  const stream    = `BT\n${streamLines}\nET`;
-  const streamLen = Buffer.byteLength(stream, 'utf8');
-
-  const obj1 = '1 0 obj\n<</Type/Catalog/Pages 2 0 R>>\nendobj\n';
-  const obj2 = '2 0 obj\n<</Type/Pages/Kids[3 0 R]/Count 1>>\nendobj\n';
-  const obj3 = '3 0 obj\n<</Type/Page/MediaBox[0 0 420 340]/Parent 2 0 R/Contents 6 0 R/Resources<</Font<</F1 4 0 R/F2 5 0 R>>>>>>\nendobj\n';
-  const obj4 = '4 0 obj\n<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>\nendobj\n';
-  const obj5 = '5 0 obj\n<</Type/Font/Subtype/Type1/BaseFont/Helvetica-Bold>>\nendobj\n';
-  const obj6 = `6 0 obj\n<</Length ${streamLen}>>\nstream\n${stream}\nendstream\nendobj\n`;
-
-  const header   = '%PDF-1.4\n';
-  let   pos      = header.length;
-  const offsets  = [];
-  const objs     = [obj1, obj2, obj3, obj4, obj5, obj6];
-  objs.forEach(o => { offsets.push(pos); pos += o.length; });
-
-  const xrefPos = pos;
-  const xref    = ['xref\n', `0 ${objs.length + 1}\n`, '0000000000 65535 f \n',
-    ...offsets.map(o => `${String(o).padStart(10, '0')} 00000 n \n`)].join('');
-  const trailer = `trailer\n<</Size ${objs.length + 1}/Root 1 0 R>>\nstartxref\n${xrefPos}\n%%EOF`;
-
-  return Buffer.from(header + objs.join('') + xref + trailer, 'utf8');
+  return new Promise((resolve, reject) => {
+    const PDFDocument = require('pdfkit');
+    const chunks = [];
+    const doc = new PDFDocument({ size: [420, 340], margin: 0 });
+ 
+    doc.on('data', chunk => chunks.push(chunk));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+ 
+    const addr  = order.recipient_address;
+    const trkNum   = tracking.replace(/\D/g, '').slice(-6) || '000000';
+    const zoneNum  = parseInt(trkNum.slice(0, 2)) % 9 + 1;
+    const routeZone = `B-${400 + zoneNum * 7}-WGP-0${zoneNum % 6 + 1}`;
+    const sortCode  = `B-${494 + zoneNum}-RLC-z${zoneNum % 3 + 1}-0${zoneNum % 4 + 2}`;
+    const hubCode   = `C-0${(zoneNum % 3)+1}-MLMIG-0${(zoneNum % 5)+1}`;
+    const dropLetter = String.fromCharCode(65 + (zoneNum % 4));
+    const dropCode  = `${dropLetter}-0${(zoneNum % 3)+1}-DGT.${(zoneNum % 4)+1}-LR`;
+    const boxL      = String(5 + (zoneNum % 5)).padStart(2,'0');
+    const boxR      = String(3 + (zoneNum % 7)).padStart(2,'0');
+    const totalQty  = order.item_list.reduce((s,i) => s + i.model_quantity_purchased, 0);
+ 
+    const ORANGE = '#EE4D2D';
+    const BLACK  = '#111111';
+    const GRAY   = '#555555';
+    const W = 420, H = 340;
+ 
+    // ── Background ──────────────────────────────────────────────────────────
+    doc.rect(0, 0, W, H).fill('#ffffff');
+ 
+    // ── TOP HEADER BAR ───────────────────────────────────────────────────────
+    doc.rect(0, 0, W, 36).fill(ORANGE);
+    doc.fillColor('#ffffff').fontSize(14).font('Helvetica-Bold')
+       .text('SPX EXPRESS', 10, 9);
+    doc.fontSize(8).font('Helvetica')
+       .text('Shipping Label', 110, 12);
+ 
+    // ── ROUTE ZONE (large) ───────────────────────────────────────────────────
+    doc.fillColor(BLACK).fontSize(18).font('Helvetica-Bold')
+       .text(routeZone, 10, 42);
+ 
+    // ── BOX NUMBERS (top right) ──────────────────────────────────────────────
+    doc.rect(310, 36, 110, 50).stroke(BLACK);
+    doc.rect(310, 36, 55, 50).stroke(BLACK);
+    doc.fontSize(22).font('Helvetica-Bold').fillColor(BLACK)
+       .text(boxL, 318, 42);
+    doc.text(boxR, 368, 42);
+    doc.fontSize(8).font('Helvetica').fillColor(GRAY)
+       .text(`Zone ${zoneNum}`, 316, 74)
+       .text(dropCode, 356, 74);
+ 
+    // ── SORT / HUB CODES ─────────────────────────────────────────────────────
+    doc.fontSize(8).font('Helvetica').fillColor(GRAY)
+       .text(`RTS Sort Code: ${sortCode}`, 10, 66)
+       .text(hubCode, 10, 78);
+ 
+    // ── DIVIDER ──────────────────────────────────────────────────────────────
+    doc.moveTo(0, 92).lineTo(W, 92).stroke(BLACK);
+ 
+    // ── ORDER ID ─────────────────────────────────────────────────────────────
+    doc.rect(0, 92, W, 18).fill('#f5f5f5');
+    doc.fontSize(8).font('Helvetica').fillColor(GRAY)
+       .text('Order ID:', 10, 97);
+    doc.fontSize(8).font('Helvetica-Bold').fillColor(BLACK)
+       .text(order.order_sn, 58, 97);
+    doc.fontSize(8).font('Helvetica-Bold').fillColor('#ffffff')
+       .rect(340, 93, 70, 16).fill(BLACK);
+    doc.fillColor('#ffffff').text('COD', 363, 97);
+ 
+    // ── TRACKING BARCODE AREA ─────────────────────────────────────────────────
+    doc.moveTo(0, 110).lineTo(W, 110).stroke(BLACK);
+ 
+    // Simple barcode visual (deterministic bars from tracking number)
+    let seed = 0;
+    for (let i = 0; i < tracking.length; i++) seed = (seed * 31 + tracking.charCodeAt(i)) & 0xffffffff;
+    let x = 30;
+    for (let i = 0; i < 80 && x < 390; i++) {
+      seed = (seed * 1664525 + 1013904223) & 0xffffffff;
+      const w = (Math.abs(seed) % 3) + 1;
+      const isBlack = (Math.abs(seed >> 8) % 3) !== 0;
+      if (isBlack) doc.rect(x, 114, w, 20).fill(BLACK);
+      x += w + 0.5;
+    }
+    doc.fontSize(9).font('Helvetica-Bold').fillColor(BLACK)
+       .text(tracking, 30, 138, { align: 'center', width: 360 });
+ 
+    // ── DIVIDER ──────────────────────────────────────────────────────────────
+    doc.moveTo(0, 150).lineTo(W, 150).stroke(BLACK);
+ 
+    // ── BUYER SECTION ─────────────────────────────────────────────────────────
+    doc.rect(0, 150, W, 80).fill('#ffffff');
+    // Left label
+    doc.save().rotate(-90, { origin: [14, 190] })
+       .fontSize(7).font('Helvetica-Bold').fillColor(GRAY)
+       .text('BUYER', -20, 187)
+       .restore();
+    doc.moveTo(26, 150).lineTo(26, 230).stroke(GRAY);
+ 
+    doc.fontSize(10).font('Helvetica-Bold').fillColor(BLACK)
+       .text(addr.name, 34, 156);
+    doc.fontSize(8).font('Helvetica').fillColor(GRAY)
+       .text(addr.full_address.substring(0, 65), 34, 170, { width: 340, lineGap: 2 });
+    doc.fontSize(8).font('Helvetica').fillColor(BLACK)
+       .text(`${addr.city}   ${addr.state}`, 34, 200);
+    doc.fontSize(10).font('Helvetica-Bold').fillColor(BLACK)
+       .text(addr.zipcode, 340, 196);
+ 
+    // ── DIVIDER ──────────────────────────────────────────────────────────────
+    doc.moveTo(0, 230).lineTo(W, 230).stroke(BLACK);
+ 
+    // ── SELLER SECTION ────────────────────────────────────────────────────────
+    doc.save().rotate(-90, { origin: [14, 255] })
+       .fontSize(7).font('Helvetica-Bold').fillColor(GRAY)
+       .text('SELLER', -10, 252)
+       .restore();
+    doc.moveTo(26, 230).lineTo(26, 280).stroke(GRAY);
+ 
+    doc.fontSize(10).font('Helvetica-Bold').fillColor(BLACK)
+       .text(DB.shop.shop_name, 34, 236);
+    doc.fontSize(8).font('Helvetica').fillColor(GRAY)
+       .text('Metro Manila, Philippines', 34, 249)
+       .text('Mandaluyong City   Metro Manila   1550', 34, 260);
+ 
+    // ── DIVIDER ──────────────────────────────────────────────────────────────
+    doc.moveTo(0, 280).lineTo(W, 280).stroke(BLACK);
+ 
+    // ── BOTTOM INFO BAR ───────────────────────────────────────────────────────
+    doc.fontSize(8).font('Helvetica').fillColor(GRAY)
+       .text(`Qty: ${totalQty}   Weight: 1,000 g`, 10, 286);
+ 
+    // Delivery attempts
+    doc.fontSize(7).font('Helvetica-Bold').fillColor(GRAY).text('Delivery Attempt', 160, 284);
+    [1,2,3].forEach((n,i) => {
+      doc.rect(160 + i*22, 292, 18, 14).stroke(GRAY);
+      doc.fontSize(8).font('Helvetica').fillColor(BLACK).text(String(n), 166 + i*22, 294);
+    });
+ 
+    // Return attempts
+    doc.fontSize(7).font('Helvetica-Bold').fillColor(GRAY).text('Return Attempt', 290, 284);
+    [1,2,3].forEach((n,i) => {
+      doc.rect(290 + i*22, 292, 18, 14).stroke(GRAY);
+      doc.fontSize(8).font('Helvetica').fillColor(BLACK).text(String(n), 296 + i*22, 294);
+    });
+ 
+    // ── TAGLINE FOOTER ────────────────────────────────────────────────────────
+    doc.moveTo(0, 310).lineTo(W, 310).stroke(BLACK);
+    doc.rect(0, 310, W, 30).fill(ORANGE);
+    doc.fontSize(10).font('Helvetica-Bold').fillColor('#ffffff')
+       .text('ANG DALI-DALI SA SHOPEE', 0, 316, { align: 'center', width: W });
+    doc.fontSize(7).font('Helvetica').fillColor('#ffffff')
+       .text('WITH ON-TIME DELIVERY GUARANTEE  |  MOCK LABEL — Demo Environment', 0, 326, { align: 'center', width: W });
+ 
+    doc.end();
+  });
 }
 
 // ── ODOO CALLBACK RESOLVER ────────────────────────────────────────────
