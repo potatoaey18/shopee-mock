@@ -1704,14 +1704,11 @@ async function handleDownloadShippingDocument(req, res) {
     DB.labelStatus[order_sn] = 'STORED';
 
     const tracking = DB.trackingNumbers[order_sn];
-
     try {
-      // ✅ FIXED: await the Promise — buildShippingLabelPDF is async
+      // FIX 1: await the async PDF builder
       const pdfBuffer = await buildShippingLabelPDF(order, tracking);
       const pdfBase64 = pdfBuffer.toString('base64');
-
       console.log(`[LABEL] ✅ Generated PDF for ${order_sn} — tracking: ${tracking} — ${pdfBuffer.length} bytes`);
-
       return { order_sn, status: 'READY', file_type: 'PDF', file_data: pdfBase64, fail_error: '', fail_message: '' };
     } catch (err) {
       console.error(`[LABEL] ❌ PDF generation failed for ${order_sn}:`, err);
@@ -1721,12 +1718,31 @@ async function handleDownloadShippingDocument(req, res) {
 
   saveState();
 
-  // ✅ FIXED: Always return the Shopee JSON envelope.
-  // Odoo's sale_shopee module expects Content-Type: application/json with
-  // { response: { result_list: [{ file_data: '<base64>' }] } }
-  // Sending raw binary application/pdf causes NoneType crashes in Odoo.
-  res.set('Content-Type', 'application/json');
-  return res.json({ error: '', message: '', request_id: rid(), response: { result_list } });
+  // FIX 2: Return raw binary PDF, NOT JSON.
+  //
+  // Odoo's make_shopee_api_request checks Content-Type:
+  //   if not 'application/json' in Content-Type:
+  //       response_content = resp.content   <-- raw bytes, passed directly as attachment
+  //   else:
+  //       response_content = resp.json()['response']  <-- returns a dict, not bytes
+  //
+  // _download_shipping_label then does: attachments=[(filename, content)]
+  // If content is a dict (JSON path), Odoo crashes with NoneType: None.
+  // If content is raw bytes (binary path), it attaches correctly to the chatter.
+  //
+  // Conclusion: always return application/pdf binary for this endpoint.
+
+  const success = result_list.find(r => r.status === 'READY' && r.file_data);
+  if (success) {
+    const pdfBuffer = Buffer.from(success.file_data, 'base64');
+    console.log(`[LABEL] Sending binary PDF — ${pdfBuffer.length} bytes`);
+    res.set('Content-Type', 'application/pdf');
+    res.set('Content-Length', String(pdfBuffer.length));
+    return res.send(pdfBuffer);
+  }
+
+  console.warn('[LABEL] No successful PDF — returning JSON error');
+  return res.json({ error: 'label_error', message: 'No labels could be generated', request_id: rid(), response: { result_list } });
 }
 
 app.post('/api/v2/logistics/download_shipping_document', requireAuth, handleDownloadShippingDocument);
