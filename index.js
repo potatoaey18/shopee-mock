@@ -1078,7 +1078,14 @@ app.post('/api/demo/advance_delivery', async (req, res) => {
   const { order_sn } = req.body;
   const order = DB.orders.find(o => o.order_sn === order_sn);
   if (!order) return res.status(404).json({ error: 'Order not found' });
-  if (order.order_status !== 'SHIPPED') return res.status(400).json({ error: 'Order must be SHIPPED first.' });
+  // PROCESSED means the label was generated — treat it as SHIPPED for delivery advancement
+  if (!['SHIPPED', 'PROCESSED'].includes(order.order_status)) {
+    return res.status(400).json({ error: 'Order must be SHIPPED or PROCESSED to advance delivery.' });
+  }
+  if (order.order_status === 'PROCESSED') {
+    order.order_status = 'SHIPPED';
+    console.log(`[DELIVERY] Auto-upgraded ${order_sn} PROCESSED → SHIPPED`);
+  }
   const current = DB.deliveryStatus[order_sn] ?? 1;
   if (current >= 4) return res.json({ order_sn, step: 4, step_name: 'Delivered', message: 'Already delivered.' });
   const next = current + 1;
