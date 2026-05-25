@@ -79,7 +79,7 @@ async function notifyOdooDelivered(order_sn) {
   console.warn(`[WEBHOOK] ⚠️  All Odoo webhook paths failed for ${order_sn}.`);
 }
 
-// ── PDF GENERATOR ─────────────────────────────────────────────────────
+// ── PDF GENERATOR — SPX-style label ──────────────────────────────────
 function buildShippingLabelPDF(order, tracking) {
   const safe = s => String(s || '').replace(/[()\\]/g, c => '\\' + c);
   const addr = order.recipient_address;
@@ -87,21 +87,56 @@ function buildShippingLabelPDF(order, tracking) {
     `${i.item_name.substring(0, 38)} x${i.model_quantity_purchased}`
   ).join(' | ');
 
+  // Simulate SPX routing codes from tracking number
+  const trkSuffix = tracking.slice(-4);
+  const routeZone = 'B-463-WGP-06';
+  const sortCode  = 'B-494-RLC-z1-06';
+  const hubCode   = 'C-02-MLMIG-02';
+  const dropCode  = 'D-01-DGT.2-LR';
+
   const streamLines = [
-    // Header bar (simulated with text)
-    '/F2 13 Tf 30 295 Td (SHOPEE EXPRESS — SHIPPING LABEL) Tj',
-    '/F1 9 Tf 0 -18 Td (Order: ' + safe(order.order_sn) + ') Tj',
-    '0 -13 Td (Carrier: ' + safe(order.shipping_carrier) + ') Tj',
-    '/F2 11 Tf 0 -20 Td (Tracking Number:) Tj',
-    '/F2 14 Tf 0 -18 Td (' + safe(tracking) + ') Tj',
-    '/F2 10 Tf 0 -22 Td (DELIVER TO:) Tj',
-    '/F1 11 Tf 0 -15 Td (' + safe(addr.name) + ') Tj',
-    '/F1 9 Tf 0 -13 Td (' + safe(addr.phone) + ') Tj',
-    '0 -13 Td (' + safe(addr.full_address.substring(0, 65)) + ') Tj',
-    '/F2 9 Tf 0 -20 Td (ITEMS:) Tj',
-    '/F1 9 Tf 0 -13 Td (' + safe(items.substring(0, 70)) + ') Tj',
-    '/F2 9 Tf 0 -22 Td (Amount: PHP ' + safe(order.total_amount) + ') Tj',
-    '/F1 8 Tf 0 -30 Td (MOCK LABEL — Shopee Demo Environment) Tj',
+    // Header bar
+    '/F2 11 Tf 30 310 Td (SPX EXPRESS) Tj',
+    '/F1 8 Tf 100 310 Td (Shipping Label) Tj',
+    // Route zone large
+    '/F2 16 Tf 30 290 Td (' + safe(routeZone) + ') Tj',
+    // Boxes top-right
+    '/F2 18 Tf 310 295 Td (06) Tj',
+    '/F1 8 Tf 310 282 Td (F) Tj',
+    '/F2 18 Tf 350 295 Td (06) Tj',
+    '/F1 8 Tf 350 282 Td (R) Tj',
+    // Sort code
+    '/F1 8 Tf 30 275 Td (RTS Sort Code: ' + safe(sortCode) + ') Tj',
+    '/F1 8 Tf 30 263 Td (' + safe(hubCode) + ') Tj',
+    // Drop code large
+    '/F2 14 Tf 260 270 Td (' + safe(dropCode) + ') Tj',
+    // Order ID
+    '/F1 8 Tf 30 250 Td (Order ID: ' + safe(order.order_sn) + ') Tj',
+    // Tracking barcode simulation
+    '/F2 13 Tf 80 228 Td (' + safe(tracking) + ') Tj',
+    // Buyer section
+    '/F2 9 Tf 30 210 Td (BUYER) Tj',
+    '/F2 10 Tf 60 198 Td (' + safe(addr.name) + ') Tj',
+    '/F1 8 Tf 60 186 Td (' + safe(addr.full_address.substring(0, 60)) + ') Tj',
+    '/F1 8 Tf 60 174 Td (' + safe(addr.city) + '   ' + safe(addr.state) + ') Tj',
+    '/F1 8 Tf 60 162 Td (' + safe(addr.zipcode) + ') Tj',
+    // Seller section
+    '/F2 9 Tf 30 145 Td (SELLER) Tj',
+    '/F2 10 Tf 60 133 Td (' + safe(DB.shop.shop_name) + ') Tj',
+    '/F1 8 Tf 60 121 Td (Metro Manila, PH) Tj',
+    // Bottom info
+    '/F1 8 Tf 30 100 Td (Product Quantity: ' + safe(order.item_list.reduce((s,i)=>s+i.model_quantity_purchased,0)) + ') Tj',
+    '/F1 8 Tf 30 88 Td (Weight: 1,000 g) Tj',
+    // Delivery attempt
+    '/F2 8 Tf 30 70 Td (Delivery Attempt) Tj',
+    '/F1 10 Tf 30 55 Td (1     2     3) Tj',
+    // Return attempt
+    '/F2 8 Tf 260 70 Td (Return Attempt) Tj',
+    '/F1 10 Tf 260 55 Td (1     2     3) Tj',
+    // Tagline
+    '/F2 10 Tf 80 30 Td (ANG DALI-DALI SA SHOPEE) Tj',
+    '/F1 7 Tf 90 19 Td (WITH ON-TIME DELIVERY GUARANTEE) Tj',
+    '/F1 7 Tf 100 8 Td (MOCK LABEL — Shopee Demo Environment) Tj',
   ].join('\n');
 
   const stream    = `BT\n${streamLines}\nET`;
@@ -380,83 +415,9 @@ app.get('/', (req, res) => {
   const self     = `${req.protocol}://${req.get('host')}`;
   const tab      = req.query.tab || 'orders';
 
-  // ── build order rows ──
-  const orderRows = DB.orders.map(o => {
-    const tracking   = DB.trackingNumbers[o.order_sn] || '';
-    const delivStep  = DB.deliveryStatus[o.order_sn];
-    const isShipped  = o.order_status === 'SHIPPED';
-    const isDelivered = delivStep === 4;
-    const statusLabel = isDelivered ? 'COMPLETED' : o.order_status === 'READY_TO_SHIP' ? 'To Ship' : isShipped ? 'Shipping' : o.order_status;
-    const statusCls   = isDelivered ? 'completed' : o.order_status === 'READY_TO_SHIP' ? 'toship' : isShipped ? 'shipping' : 'default';
-    const items       = o.item_list.map(i => `${i.item_name} x${i.model_quantity_purchased}`).join('; ');
-    const itemCount   = o.item_list.reduce((s, i) => s + i.model_quantity_purchased, 0);
-    const createDate  = new Date(o.create_time * 1000).toLocaleString('en-PH', { timeZone: 'Asia/Manila', dateStyle: 'medium', timeStyle: 'short' });
-
-    let actionBtn = '';
-    if (!isShipped) {
-      actionBtn = `<button class="sc-btn sc-btn-primary" onclick="shipOrder('${o.order_sn}')">Arrange Shipment</button>`;
-    } else if (!isDelivered) {
-      const nextStep  = (delivStep ?? 1) + 1;
-      const nextLabel = DELIVERY_STEPS[nextStep] || 'Delivered';
-      actionBtn = `
-        <button class="sc-btn sc-btn-outline" onclick="advanceDelivery('${o.order_sn}')" title="Advance to: ${nextLabel}">→ ${nextLabel}</button>
-        <button class="sc-btn sc-btn-outline" onclick="printLabel('${o.order_sn}')" style="margin-top:4px">Print Label</button>`;
-    } else {
-      actionBtn = `<span class="sc-completed-tag">Completed</span>`;
-    }
-
-    return `<tr>
-      <td>
-        <div class="sc-order-id">${o.order_sn}</div>
-        <div class="sc-order-date">${createDate}</div>
-      </td>
-      <td>
-        <div class="sc-product-name">${o.item_list[0].item_name}${o.item_list.length > 1 ? ` <span class="sc-more">+${o.item_list.length - 1} more</span>` : ''}</div>
-        <div class="sc-product-meta">${itemCount} item${itemCount > 1 ? 's' : ''} · ${o.shipping_carrier}</div>
-      </td>
-      <td><div class="sc-buyer">${o.recipient_address.name}</div><div class="sc-buyer-city">${o.recipient_address.city}</div></td>
-      <td class="sc-amount">&#8369;${o.total_amount.toLocaleString()}</td>
-      <td><span class="sc-status ${statusCls}">${statusLabel}</span></td>
-      <td class="sc-tracking">
-        ${tracking ? `<a href="/track/${tracking}" target="_blank" class="sc-track-link">${tracking}</a>` : '<span class="sc-no-tracking">—</span>'}
-      </td>
-      <td class="sc-actions">${actionBtn}</td>
-    </tr>`;
-  }).join('');
-
-  // ── count tabs ──
-  const toShipCount  = DB.orders.filter(o => o.order_status === 'READY_TO_SHIP').length;
-  const shippingCount = DB.orders.filter(o => o.order_status === 'SHIPPED' && (DB.deliveryStatus[o.order_sn] ?? 0) < 4).length;
+  const toShipCount    = DB.orders.filter(o => o.order_status === 'READY_TO_SHIP').length;
+  const shippingCount  = DB.orders.filter(o => o.order_status === 'SHIPPED' && (DB.deliveryStatus[o.order_sn] ?? 0) < 4).length;
   const completedCount = DB.orders.filter(o => DB.deliveryStatus[o.order_sn] === 4).length;
-
-  // ── build product rows ──
-  const productRows = DB.products.map(p => {
-    const synced = DB.syncedProducts[p.item_id];
-    const stock  = synced ? synced.stock : 100;
-    const stockDisplay = stock === 0 ? `<span class="sc-sold-out">Sold out</span>` : `<span class="sc-stock ${stock <= 10 ? 'low' : ''}">${stock}</span>`;
-    const lastSync = synced ? `<span class="sc-synced-tag">Odoo</span><span class="sc-sync-time">${synced.last_sync}</span>` : '<span class="sc-no-sync">—</span>';
-    return `<tr>
-      <td>
-        <div class="sc-prod-wrap">
-          <div class="sc-prod-thumb" style="background:linear-gradient(135deg,#EE4D2D22,#EE4D2D11);border:1px solid #EE4D2D22">
-            <span style="font-size:9px;font-weight:700;color:#EE4D2D">${p.sku.split('-')[0]}</span>
-          </div>
-          <div>
-            <div class="sc-prod-name">${p.name}</div>
-            <div class="sc-prod-ids">Item ID: ${p.item_id} · SKU: ${p.sku}</div>
-          </div>
-        </div>
-      </td>
-      <td class="sc-price">&#8369;${p.price}</td>
-      <td>${stockDisplay}</td>
-      <td class="sc-sales">—</td>
-      <td>${lastSync}</td>
-      <td class="sc-actions">
-        <span class="sc-action-link">Edit</span>
-        <span class="sc-action-link">Boost</span>
-      </td>
-    </tr>`;
-  }).join('');
 
   res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -466,8 +427,6 @@ app.get('/', (req, res) => {
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f5f5;color:#222;font-size:13px;min-height:100vh}
-
-/* ── Topbar ── */
 .sc-topbar{background:#EE4D2D;display:flex;align-items:center;height:48px;padding:0 16px;gap:12px;position:sticky;top:0;z-index:100}
 .sc-topbar-logo{display:flex;align-items:center;gap:8px;color:white;font-size:18px;font-weight:700;text-decoration:none;padding-right:16px;border-right:1px solid rgba(255,255,255,0.3)}
 .sc-topbar-logo-s{width:28px;height:28px;background:white;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#EE4D2D;font-size:16px;font-weight:900}
@@ -475,37 +434,22 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .sc-topbar-shop{margin-left:auto;display:flex;align-items:center;gap:6px;color:white;font-size:12px;opacity:.9}
 .sc-online-dot{width:7px;height:7px;border-radius:50%;background:#4ade80;animation:pulse 2s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
-
-/* ── Layout ── */
 .sc-layout{display:flex;min-height:calc(100vh - 48px)}
-
-/* ── Sidebar ── */
 .sc-sidebar{width:200px;background:white;border-right:1px solid #e8e8e8;padding:8px 0;flex-shrink:0}
 .sc-sidebar-section{padding:16px 16px 4px;font-size:11px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.6px}
 .sc-sidebar-item{display:flex;align-items:center;gap:8px;padding:8px 16px;cursor:pointer;color:#444;font-size:13px;transition:background .1s;border-left:3px solid transparent}
 .sc-sidebar-item:hover{background:#fff5f3;color:#EE4D2D}
 .sc-sidebar-item.active{background:#fff5f3;color:#EE4D2D;font-weight:600;border-left-color:#EE4D2D}
-.sc-sidebar-sub{padding:6px 16px 6px 28px;cursor:pointer;color:#555;font-size:12px;transition:background .1s}
-.sc-sidebar-sub:hover{background:#fff5f3;color:#EE4D2D}
-.sc-sidebar-sub.active{color:#EE4D2D;font-weight:600}
-
-/* ── Main ── */
 .sc-main{flex:1;padding:16px;overflow:auto}
-
-/* ── Page header ── */
 .sc-page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
 .sc-page-title{font-size:18px;font-weight:600;color:#222}
 .sc-breadcrumb{font-size:12px;color:#888;margin-bottom:4px}
 .sc-breadcrumb span{color:#EE4D2D}
-
-/* ── Tabs ── */
 .sc-tabs{display:flex;border-bottom:2px solid #e8e8e8;margin-bottom:14px;gap:0}
 .sc-tab{padding:10px 18px;font-size:13px;cursor:pointer;color:#555;border-bottom:2px solid transparent;margin-bottom:-2px;white-space:nowrap;transition:color .15s}
 .sc-tab:hover{color:#EE4D2D}
 .sc-tab.active{color:#EE4D2D;font-weight:600;border-bottom-color:#EE4D2D}
 .sc-tab .sc-tab-count{display:inline-block;background:#EE4D2D;color:white;font-size:10px;font-weight:700;padding:1px 6px;border-radius:10px;margin-left:5px}
-
-/* ── Toolbar ── */
 .sc-toolbar{display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}
 .sc-search{display:flex;align-items:center;border:1px solid #ddd;border-radius:4px;overflow:hidden;background:white}
 .sc-search input{border:none;outline:none;padding:6px 10px;font-size:12px;width:200px}
@@ -515,16 +459,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .sc-btn-primary{background:#EE4D2D;color:white}.sc-btn-primary:hover{background:#d94426}
 .sc-btn-outline{background:white;color:#555;border:1px solid #ddd}.sc-btn-outline:hover{border-color:#EE4D2D;color:#EE4D2D}
 .sc-btn-sm{padding:4px 10px;font-size:11px}
-
-/* ── Table ── */
 .sc-table-wrap{background:white;border-radius:4px;border:1px solid #e8e8e8;overflow:hidden}
 table{width:100%;border-collapse:collapse}
 th{padding:10px 12px;font-size:11px;font-weight:600;color:#666;text-align:left;background:#fafafa;border-bottom:1px solid #e8e8e8;white-space:nowrap}
 td{padding:12px 12px;border-bottom:1px solid #f2f2f2;vertical-align:top}
 tr:last-child td{border-bottom:none}
 tr:hover td{background:#fffaf9}
-
-/* ── Order cells ── */
 .sc-order-id{font-size:12px;font-weight:600;color:#EE4D2D;font-family:monospace}
 .sc-order-date{font-size:11px;color:#999;margin-top:2px}
 .sc-product-name{font-size:12px;font-weight:500;color:#222;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -539,15 +479,11 @@ tr:hover td{background:#fffaf9}
 .sc-actions{white-space:nowrap}
 .sc-actions .sc-btn{display:block;width:100%;margin-bottom:4px;text-align:center}
 .sc-completed-tag{font-size:11px;color:#16a34a;font-weight:600}
-
-/* ── Status badges ── */
 .sc-status{display:inline-block;padding:3px 8px;border-radius:3px;font-size:11px;font-weight:600;white-space:nowrap}
 .sc-status.toship{background:#FFF3E0;color:#E65100}
 .sc-status.shipping{background:#E3F2FD;color:#1565C0}
 .sc-status.completed{background:#E8F5E9;color:#2E7D32}
 .sc-status.default{background:#f5f5f5;color:#666}
-
-/* ── Product cells ── */
 .sc-prod-wrap{display:flex;align-items:center;gap:8px}
 .sc-prod-thumb{width:40px;height:40px;border-radius:4px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
 .sc-prod-name{font-size:12px;font-weight:500;color:#222;max-width:260px;line-height:1.4}
@@ -561,13 +497,9 @@ tr:hover td{background:#fffaf9}
 .sc-sync-time{font-size:10px;color:#999}
 .sc-no-sync{color:#bbb}
 .sc-action-link{color:#1a6ef5;font-size:12px;cursor:pointer;margin-right:8px}.sc-action-link:hover{text-decoration:underline}
-
-/* ── Info boxes ── */
 .sc-info-box{background:#fff8e6;border:1px solid #ffd369;border-radius:4px;padding:10px 14px;font-size:12px;color:#7a5c00;margin-bottom:12px;display:flex;align-items:flex-start;gap:8px}
 .sc-warn-box{background:#fff1f1;border:1px solid #ffb3b3;border-radius:4px;padding:10px 14px;font-size:12px;color:#a00;margin-bottom:12px}
 .sc-mock-bar{background:#fff3cd;border-top:1px solid #ffc107;padding:7px 16px;font-size:11px;color:#856404;text-align:center}
-
-/* ── Summary cards ── */
 .sc-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}
 @media(max-width:640px){.sc-summary{grid-template-columns:repeat(2,1fr)}}
 .sc-card{background:white;border:1px solid #e8e8e8;border-radius:4px;padding:12px 14px}
@@ -575,29 +507,18 @@ tr:hover td{background:#fffaf9}
 .sc-card-value{font-size:22px;font-weight:600;color:#222}
 .sc-card-value.orange{color:#EE4D2D}
 .sc-card-value.green{color:#16a34a}
-
-/* ── New order form ── */
 .sc-new-order{background:#fafafa;border:1px solid #e8e8e8;border-radius:4px;padding:14px;margin-bottom:12px;display:none}
 .sc-new-order h3{font-size:13px;font-weight:600;margin-bottom:10px;color:#222}
 .sc-form-row{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}
 .sc-form-group{display:flex;flex-direction:column;gap:3px}
 .sc-form-group label{font-size:11px;color:#666}
 .sc-form-group input,.sc-form-group select{padding:6px 10px;border:1px solid #ddd;border-radius:4px;font-size:12px;min-width:120px}
-
-/* ── Toast ── */
 .sc-toast{position:fixed;bottom:24px;right:24px;background:#333;color:white;padding:10px 18px;border-radius:6px;font-size:12px;font-weight:500;opacity:0;transition:opacity .25s;z-index:9999;max-width:300px}
 .sc-toast.show{opacity:1}
-
-/* ── Shipping priority tabs ── */
-.sc-priority-tabs{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
-.sc-priority-tab{padding:5px 14px;border-radius:20px;border:1px solid #ddd;font-size:12px;cursor:pointer;color:#555;background:white}
-.sc-priority-tab.active{background:#EE4D2D;color:white;border-color:#EE4D2D}
-.sc-priority-tab:hover:not(.active){border-color:#EE4D2D;color:#EE4D2D}
 </style>
 </head>
 <body>
 
-<!-- Topbar -->
 <div class="sc-topbar">
   <a class="sc-topbar-logo" href="/">
     <div class="sc-topbar-logo-s">S</div>
@@ -611,44 +532,23 @@ tr:hover td{background:#fffaf9}
 </div>
 
 <div class="sc-layout">
-<!-- Sidebar -->
 <div class="sc-sidebar">
   <div class="sc-sidebar-section">Order</div>
   <div class="sc-sidebar-item ${tab === 'orders' ? 'active' : ''}" onclick="switchTab('orders')">My Orders</div>
-  <div class="sc-sidebar-sub">Mass Ship</div>
-  <div class="sc-sidebar-sub">Handover Centre</div>
-  <div class="sc-sidebar-sub">Return/Refund/Cancel</div>
 
   <div class="sc-sidebar-section">Product</div>
   <div class="sc-sidebar-item ${tab === 'products' ? 'active' : ''}" onclick="switchTab('products')">My Products</div>
-  <div class="sc-sidebar-sub">Add New Product</div>
-
-  <div class="sc-sidebar-section">FBS</div>
-  <div class="sc-sidebar-sub">Fulfilled by Shopee</div>
-
-  <div class="sc-sidebar-section">Finance</div>
-  <div class="sc-sidebar-sub">My Income</div>
-  <div class="sc-sidebar-sub">My Balance</div>
-
-  <div class="sc-sidebar-section">Data</div>
-  <div class="sc-sidebar-sub">Business Insights</div>
-  <div class="sc-sidebar-sub">Account Health</div>
 </div>
 
-<!-- Main -->
 <div class="sc-main">
 
 ${!ODOO_BASE_URL ? `<div class="sc-warn-box">⚠️ <strong>ODOO_BASE_URL</strong> not set — OAuth callback and webhook delivery notifications are disabled.</div>` : ''}
 
-<!-- ══════════ ORDERS TAB ══════════ -->
+<!-- ORDERS TAB -->
 <div id="tab-orders" style="display:${tab === 'orders' ? 'block' : 'none'}">
   <div class="sc-breadcrumb">Home > <span>My Orders</span></div>
   <div class="sc-page-header">
     <div class="sc-page-title">My Orders</div>
-    <div style="display:flex;gap:8px">
-      <button class="sc-btn sc-btn-outline">Export</button>
-      <button class="sc-btn sc-btn-outline">Export History</button>
-    </div>
   </div>
 
   <div class="sc-summary">
@@ -664,7 +564,6 @@ ${!ODOO_BASE_URL ? `<div class="sc-warn-box">⚠️ <strong>ODOO_BASE_URL</stron
     <div class="sc-tab" onclick="filterOrders('toship',this)">To Ship${toShipCount > 0 ? `<span class="sc-tab-count">${toShipCount}</span>` : ''}</div>
     <div class="sc-tab" onclick="filterOrders('shipping',this)">Shipping</div>
     <div class="sc-tab" onclick="filterOrders('completed',this)">Completed (${completedCount})</div>
-    <div class="sc-tab" onclick="filterOrders('return',this)">Return/Refund/Cancel</div>
   </div>
 
   <div class="sc-info-box">
@@ -685,7 +584,6 @@ ${!ODOO_BASE_URL ? `<div class="sc-warn-box">⚠️ <strong>ODOO_BASE_URL</stron
     <button class="sc-btn sc-btn-outline" onclick="location.reload()">↻ Refresh</button>
   </div>
 
-  <!-- New order form -->
   <div class="sc-new-order" id="new-order-form">
     <h3>Create New Demo Order</h3>
     <div class="sc-form-row">
@@ -769,7 +667,7 @@ ${!ODOO_BASE_URL ? `<div class="sc-warn-box">⚠️ <strong>ODOO_BASE_URL</stron
   </div>
 </div>
 
-<!-- ══════════ PRODUCTS TAB ══════════ -->
+<!-- PRODUCTS TAB -->
 <div id="tab-products" style="display:${tab === 'products' ? 'block' : 'none'}">
   <div class="sc-breadcrumb">Home > <span>My Products</span></div>
   <div class="sc-page-header">
@@ -853,8 +751,8 @@ ${!ODOO_BASE_URL ? `<div class="sc-warn-box">⚠️ <strong>ODOO_BASE_URL</stron
   </div>
 </div>
 
-</div><!-- /.sc-main -->
-</div><!-- /.sc-layout -->
+</div>
+</div>
 
 <div class="sc-mock-bar">🟠 Shopee Mock API v4.0 — Demo environment · Partner ID: ${PARTNER_ID}</div>
 <div class="sc-toast" id="sc-toast"></div>
@@ -886,7 +784,6 @@ function toast(msg, dur=3500) {
 function toggleNewOrderForm() {
   const f = document.getElementById('new-order-form');
   f.style.display = f.style.display === 'none' ? 'block' : 'none';
-  // auto-fill price from product
   const sel = document.getElementById('nof-product');
   if (sel) document.getElementById('nof-price').value = sel.selectedOptions[0].dataset.price || 100;
 }
@@ -1020,7 +917,7 @@ app.post('/api/demo/advance_delivery', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  DEMO — print label (HTML, browser-friendly)
+//  DEMO — print label (SPX-style HTML, browser-friendly)
 // ─────────────────────────────────────────────────────────────────────
 app.get('/api/demo/print_label/:order_sn', (req, res) => {
   const { order_sn } = req.params;
@@ -1028,57 +925,279 @@ app.get('/api/demo/print_label/:order_sn', (req, res) => {
   const tracking = DB.trackingNumbers[order_sn] || 'N/A';
   if (!order) return res.status(404).send('Order not found');
   if (DB.labelStatus[order_sn]) DB.labelStatus[order_sn] = 'STORED';
-  const items = order.item_list.map(i =>
-    `<tr><td>${i.item_name}</td><td style="text-align:center">${i.model_quantity_purchased}</td><td style="text-align:right">&#8369;${i.model_discounted_price}</td></tr>`
+
+  const addr     = order.recipient_address;
+  const totalQty = order.item_list.reduce((s, i) => s + i.model_quantity_purchased, 0);
+
+  // Deterministic routing codes derived from order/tracking
+  const trkNum   = tracking.replace(/\D/g, '').slice(-6) || '000000';
+  const zoneNum  = parseInt(trkNum.slice(0, 2)) % 9 + 1;
+  const routeZone = `B-${400 + zoneNum * 7}-WGP-0${zoneNum % 6 + 1}`;
+  const sortCode  = `B-${494 + zoneNum}-RLC-z${zoneNum % 3 + 1}-0${zoneNum % 4 + 2}`;
+  const hubCode   = `C-0${(zoneNum % 3)+1}-MLMIG-0${(zoneNum % 5)+1}`;
+  const dropLetter = String.fromCharCode(65 + (zoneNum % 4));
+  const dropCode  = `${dropLetter}-0${(zoneNum % 3)+1}-DGT.${(zoneNum % 4)+1}-LR`;
+  const hubZoneL  = String.fromCharCode(70 + (zoneNum % 3)); // F, G, H
+  const hubZoneR  = String.fromCharCode(82 + (zoneNum % 2)); // R, S
+  const boxL      = String(5 + (zoneNum % 5)).padStart(2,'0');
+  const boxR      = String(3 + (zoneNum % 7)).padStart(2,'0');
+
+  // QR code data URI (simple black square placeholder with pattern)
+  const qrSize = 80;
+
+  const itemRows = order.item_list.map(i =>
+    `<tr><td style="padding:2px 4px;font-size:11px">${i.item_name}</td><td style="padding:2px 4px;font-size:11px;text-align:center">${i.model_quantity_purchased}</td></tr>`
   ).join('');
+
   res.send(`<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><title>Label — ${order_sn}</title>
 <style>
-@media print{.no-print{display:none}body{margin:0}}
-body{font-family:Arial,sans-serif;background:#f0f0f0;display:flex;justify-content:center;padding:20px}
-.label{background:white;width:400px;border:2px solid #000;font-size:12px}
-.lh{background:#EE4D2D;color:white;padding:10px 14px;display:flex;align-items:center;gap:10px}
-.lh .logo{font-size:20px;font-weight:900;background:white;color:#EE4D2D;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:6px}
-.lh .title{font-size:13px;font-weight:700}.lh .sub{font-size:10px;opacity:.85}
-.sec{padding:10px 14px;border-bottom:1px dashed #ccc}.sec:last-child{border-bottom:none}
-.kv{display:flex;justify-content:space-between;margin-bottom:4px}
-.k{color:#888;font-size:10px;text-transform:uppercase;letter-spacing:.5px}
-.v{font-weight:700;font-size:13px}
-.trk{background:#000;color:white;text-align:center;padding:10px;letter-spacing:3px;font-size:15px;font-weight:900;margin:8px 0;border-radius:4px}
-.to{background:#fff8f6;border:1px solid #fde0d8;border-radius:6px;padding:8px 10px;margin-top:4px}
-.toname{font-size:14px;font-weight:700;margin-bottom:2px}
-.toaddr{font-size:11px;color:#555;line-height:1.5}
-.it{width:100%;border-collapse:collapse;font-size:11px}
-.it th{background:#f5f5f5;padding:5px 6px;text-align:left;font-size:10px;color:#888;text-transform:uppercase}
-.it td{padding:5px 6px;border-bottom:1px solid #f0f0f0}
-.bc{text-align:center;padding:8px;font-family:monospace;font-size:10px;letter-spacing:2px;color:#555}
-.mock{background:#fffbeb;border-top:1px solid #fcd34d;text-align:center;padding:6px;font-size:10px;color:#92400e}
-.pbtn{display:block;margin:16px auto;padding:10px 28px;background:#EE4D2D;color:white;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer}
-</style></head><body>
-<div>
-<button class="pbtn no-print" onclick="window.print()">🖨 Print Label</button>
+@media print{.no-print{display:none}body{margin:0;background:white}}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Arial,Helvetica,sans-serif;background:#e8e8e8;display:flex;flex-direction:column;align-items:center;padding:20px;min-height:100vh}
+.print-btn{margin-bottom:16px;padding:10px 28px;background:#EE4D2D;color:white;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;letter-spacing:.5px}
+.label{background:white;width:420px;border:1.5px solid #111;font-family:Arial,Helvetica,sans-serif;position:relative}
+
+/* TOP STRIP */
+.top-strip{display:flex;align-items:stretch;border-bottom:1.5px solid #111;min-height:90px}
+.top-left{display:flex;flex-direction:column;justify-content:space-between;border-right:1.5px solid #111;padding:6px 8px;min-width:100px;flex:0 0 auto}
+.spx-logo{display:flex;align-items:center;gap:5px;margin-bottom:4px}
+.spx-logo-box{background:#EE4D2D;color:white;font-weight:900;font-size:13px;padding:2px 5px;border-radius:2px;letter-spacing:1px}
+.spx-sub{font-size:7px;color:#EE4D2D;font-weight:700;letter-spacing:1px}
+.top-center{flex:1;display:flex;flex-direction:column;justify-content:space-between;padding:6px 8px;border-right:1.5px solid #111}
+.route-zone{font-size:18px;font-weight:900;letter-spacing:1px;line-height:1}
+.sort-code{font-size:8px;color:#333;margin-top:3px;line-height:1.5}
+.hub-code{font-size:8px;color:#333}
+.top-right{display:flex;gap:0;align-items:stretch;flex-shrink:0}
+.box-cell{border-left:1.5px solid #111;width:42px;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.box-num{font-size:26px;font-weight:900;line-height:1}
+.box-letter{font-size:8px;font-weight:700;margin-top:2px;color:#333}
+.drop-code{font-size:14px;font-weight:900;line-height:1.2;text-align:right;padding:6px 8px;display:flex;align-items:center;justify-content:flex-end}
+
+/* ORDER ID ROW */
+.order-row{display:flex;align-items:center;justify-content:space-between;border-bottom:1.5px solid #111;padding:4px 8px;background:#f9f9f9}
+.order-label{font-size:8px;color:#555}
+.order-id{font-size:11px;font-weight:700;font-family:'Courier New',monospace;letter-spacing:.5px}
+.parcel-badge{font-size:8px;background:#111;color:white;padding:2px 6px;font-weight:700;border-radius:1px}
+
+/* BARCODE */
+.barcode-row{border-bottom:1.5px solid #111;padding:6px 8px;text-align:center}
+.barcode-bars{display:flex;justify-content:center;align-items:flex-end;gap:0;height:36px;margin-bottom:3px;overflow:hidden}
+.barcode-bars span{display:inline-block;background:#111;height:100%}
+.barcode-num{font-size:10px;font-weight:700;font-family:'Courier New',monospace;letter-spacing:2px}
+
+/* BUYER / SELLER */
+.party-row{display:flex;border-bottom:1.5px solid #111;min-height:80px}
+.party-label{writing-mode:vertical-rl;text-orientation:mixed;transform:rotate(180deg);font-size:9px;font-weight:700;letter-spacing:2px;border-right:1.5px solid #111;padding:6px 4px;text-align:center;flex-shrink:0;background:#f5f5f5}
+.party-content{flex:1;padding:6px 10px;font-size:11px;line-height:1.5}
+.party-name{font-weight:700;font-size:12px}
+.party-address{font-size:10px;color:#333;margin-top:2px;line-height:1.4}
+.party-meta{display:flex;justify-content:space-between;margin-top:6px;font-size:10px;color:#555}
+.party-zip{font-size:12px;font-weight:700}
+
+/* BOTTOM */
+.bottom-strip{display:flex;align-items:stretch;min-height:70px;border-bottom:1.5px solid #111}
+.bottom-left{flex:0 0 140px;border-right:1.5px solid #111;padding:6px 8px;font-size:10px}
+.bottom-left .qty-weight{line-height:1.8}
+.attempt-boxes{display:flex;align-items:center;margin-top:6px;gap:0}
+.attempt-label{font-size:8px;font-weight:700;margin-right:4px;color:#333}
+.attempt-cell{width:18px;height:18px;border:1px solid #111;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;margin-right:2px}
+.bottom-qr{flex:0 0 90px;border-right:1.5px solid #111;display:flex;align-items:center;justify-content:center;padding:6px}
+.bottom-right{flex:1;display:flex;align-items:center;justify-content:center;padding:6px 8px}
+.return-box{text-align:center}
+.return-label{font-size:8px;font-weight:700;margin-bottom:4px}
+
+/* TAGLINE */
+.tagline-row{padding:6px 8px;text-align:center;background:#fff}
+.tagline-main{font-size:13px;font-weight:900;letter-spacing:.5px;color:#EE4D2D;text-transform:uppercase}
+.tagline-sub{font-size:8px;letter-spacing:1px;color:#111;margin-top:1px;text-transform:uppercase;font-weight:700;border:1.5px solid #111;display:inline-block;padding:2px 8px;margin-top:3px}
+
+/* MOCK */
+.mock-footer{background:#fffbeb;border-top:1px solid #fcd34d;text-align:center;padding:5px;font-size:9px;color:#92400e}
+</style>
+</head>
+<body>
+
+<button class="print-btn no-print" onclick="window.print()">🖨 Print Label</button>
+
 <div class="label">
-  <div class="lh"><div class="logo">S</div><div><div class="title">Shopee Express</div><div class="sub">Shipping Label — Demo</div></div></div>
-  <div class="sec">
-    <div class="k">Order Number</div><div class="v">${order_sn}</div>
-    <div class="trk">${tracking}</div>
-    <div class="kv"><div><div class="k">Carrier</div><div style="font-weight:600">${order.shipping_carrier}</div></div><div style="text-align:right"><div class="k">Amount</div><div style="font-weight:600">&#8369;${order.total_amount}</div></div></div>
-  </div>
-  <div class="sec">
-    <div class="k">Deliver To</div>
-    <div class="to">
-      <div class="toname">${order.recipient_address.name}</div>
-      <div class="toaddr">${order.recipient_address.phone}<br>${order.recipient_address.full_address}</div>
+
+  <!-- TOP STRIP -->
+  <div class="top-strip">
+    <div class="top-left">
+      <div>
+        <div class="spx-logo">
+          <div class="spx-logo-box">SPX</div>
+        </div>
+        <div class="spx-sub">EXPRESS</div>
+      </div>
+      <div style="font-size:7px;color:#888;margin-top:auto">1 of 1</div>
+    </div>
+    <div class="top-center">
+      <div class="route-zone">${routeZone}</div>
+      <div class="sort-code">RTS Sort Code:<br>${sortCode}</div>
+      <div class="hub-code">${hubCode}</div>
+    </div>
+    <div style="display:flex;flex-direction:column;border-left:1.5px solid #111">
+      <div style="display:flex;flex:1">
+        <div class="box-cell">
+          <div class="box-num">${boxL}</div>
+          <div class="box-letter">${hubZoneL}</div>
+        </div>
+        <div class="box-cell">
+          <div class="box-num">${boxR}</div>
+          <div class="box-letter">${hubZoneR}</div>
+        </div>
+      </div>
+      <div style="border-top:1.5px solid #111;padding:6px 8px;text-align:right">
+        <div style="font-size:16px;font-weight:900;line-height:1.2">${dropCode}</div>
+      </div>
     </div>
   </div>
-  <div class="sec">
-    <div class="k" style="margin-bottom:6px">Items</div>
-    <table class="it"><thead><tr><th>Product</th><th style="text-align:center">Qty</th><th style="text-align:right">Price</th></tr></thead><tbody>${items}</tbody></table>
+
+  <!-- ORDER ID ROW -->
+  <div class="order-row">
+    <div><span class="order-label">Order ID: </span><span class="order-id">${order_sn}</span></div>
+    <div class="parcel-badge">COD</div>
   </div>
-  <div class="bc">||||| ${tracking} |||||\n${order_sn}</div>
-  <div class="mock">🟠 Shopee Mock API — Demo only</div>
+
+  <!-- BARCODE -->
+  <div class="barcode-row">
+    <div class="barcode-bars" id="bc-bars"></div>
+    <div class="barcode-num">${tracking}</div>
+  </div>
+
+  <!-- BUYER -->
+  <div class="party-row">
+    <div class="party-label">BUYER</div>
+    <div class="party-content">
+      <div class="party-name">${addr.name}</div>
+      <div class="party-address">${addr.full_address}</div>
+      <div class="party-meta">
+        <span>${addr.city}</span>
+        <span>${addr.state}</span>
+        <span class="party-zip">${addr.zipcode}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- SELLER -->
+  <div class="party-row">
+    <div class="party-label">SELLER</div>
+    <div class="party-content">
+      <div class="party-name">${DB.shop.shop_name}</div>
+      <div class="party-address">Metro Manila, Philippines</div>
+      <div class="party-meta">
+        <span>Mandaluyong City</span>
+        <span>Metro Manila</span>
+        <span class="party-zip">1550</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- BOTTOM STRIP -->
+  <div class="bottom-strip">
+    <div class="bottom-left">
+      <div class="qty-weight">
+        <div>Product Quantity: <strong>${totalQty}</strong></div>
+        <div>Weight: <strong>1,000 g</strong></div>
+      </div>
+      <div class="attempt-boxes" style="margin-top:6px">
+        <div style="font-size:8px;font-weight:700;margin-right:4px">Delivery<br>Attempt</div>
+        <div class="attempt-cell">1</div>
+        <div class="attempt-cell">2</div>
+        <div class="attempt-cell">3</div>
+      </div>
+    </div>
+    <div class="bottom-qr">
+      <svg width="72" height="72" viewBox="0 0 21 21" xmlns="http://www.w3.org/2000/svg">
+        <!-- QR code pattern approximation -->
+        <rect width="21" height="21" fill="white"/>
+        <!-- Top-left finder -->
+        <rect x="1" y="1" width="7" height="7" fill="black"/>
+        <rect x="2" y="2" width="5" height="5" fill="white"/>
+        <rect x="3" y="3" width="3" height="3" fill="black"/>
+        <!-- Top-right finder -->
+        <rect x="13" y="1" width="7" height="7" fill="black"/>
+        <rect x="14" y="2" width="5" height="5" fill="white"/>
+        <rect x="15" y="3" width="3" height="3" fill="black"/>
+        <!-- Bottom-left finder -->
+        <rect x="1" y="13" width="7" height="7" fill="black"/>
+        <rect x="2" y="14" width="5" height="5" fill="white"/>
+        <rect x="3" y="15" width="3" height="3" fill="black"/>
+        <!-- Data modules (deterministic from tracking) -->
+        <rect x="9" y="1" width="1" height="1" fill="black"/>
+        <rect x="11" y="1" width="1" height="1" fill="black"/>
+        <rect x="9" y="3" width="2" height="1" fill="black"/>
+        <rect x="8" y="5" width="1" height="1" fill="black"/>
+        <rect x="10" y="5" width="1" height="2" fill="black"/>
+        <rect x="12" y="4" width="1" height="1" fill="black"/>
+        <rect x="9" y="7" width="3" height="1" fill="black"/>
+        <rect x="8" y="9" width="1" height="3" fill="black"/>
+        <rect x="10" y="9" width="2" height="1" fill="black"/>
+        <rect x="9" y="11" width="1" height="1" fill="black"/>
+        <rect x="11" y="10" width="1" height="2" fill="black"/>
+        <rect x="13" y="9" width="1" height="1" fill="black"/>
+        <rect x="14" y="10" width="2" height="1" fill="black"/>
+        <rect x="13" y="11" width="3" height="2" fill="black"/>
+        <rect x="16" y="9" width="2" height="3" fill="black"/>
+        <rect x="19" y="9" width="1" height="1" fill="black"/>
+        <rect x="18" y="11" width="2" height="1" fill="black"/>
+        <rect x="9" y="13" width="2" height="1" fill="black"/>
+        <rect x="12" y="13" width="1" height="3" fill="black"/>
+        <rect x="14" y="14" width="2" height="1" fill="black"/>
+        <rect x="17" y="13" width="1" height="1" fill="black"/>
+        <rect x="16" y="15" width="3" height="1" fill="black"/>
+        <rect x="9" y="16" width="1" height="2" fill="black"/>
+        <rect x="11" y="17" width="2" height="1" fill="black"/>
+        <rect x="14" y="17" width="1" height="3" fill="black"/>
+        <rect x="16" y="18" width="2" height="1" fill="black"/>
+        <rect x="19" y="17" width="1" height="2" fill="black"/>
+        <rect x="9" y="19" width="3" height="1" fill="black"/>
+      </svg>
+    </div>
+    <div class="bottom-right">
+      <div class="return-box">
+        <div class="return-label">Return Attempt</div>
+        <div style="display:flex;gap:2px;justify-content:center">
+          <div class="attempt-cell">1</div>
+          <div class="attempt-cell">2</div>
+          <div class="attempt-cell">3</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAGLINE -->
+  <div class="tagline-row">
+    <div class="tagline-main">Ang Dali-Dali sa Shopee</div>
+    <div><span class="tagline-sub">With On-Time Delivery Guarantee</span></div>
+  </div>
+
+  <div class="mock-footer">🟠 Shopee Mock API — Demo label only · Not a real SPX shipment</div>
 </div>
-</div>
+
+<script>
+// Generate deterministic barcode bars from tracking number
+(function() {
+  const trk = '${tracking}';
+  const container = document.getElementById('bc-bars');
+  if (!container) return;
+  let seed = 0;
+  for (let i = 0; i < trk.length; i++) seed = (seed * 31 + trk.charCodeAt(i)) & 0xffffffff;
+  const total = 85;
+  for (let i = 0; i < total; i++) {
+    seed = (seed * 1664525 + 1013904223) & 0xffffffff;
+    const w = (Math.abs(seed) % 3) + 1;
+    const isBlack = (Math.abs(seed >> 8) % 3) !== 0;
+    const bar = document.createElement('span');
+    bar.style.width = w + 'px';
+    bar.style.background = isBlack ? '#111' : 'transparent';
+    bar.style.height = (Math.abs(seed >> 4) % 8 < 6) ? '100%' : '70%';
+    container.appendChild(bar);
+  }
+})();
+</script>
 </body></html>`);
 });
 
@@ -1308,22 +1427,7 @@ app.get('/api/v2/logistics/get_shipping_document_result', requireAuth, (req, res
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  download_shipping_document — FIXED FOR ODOO
-//
-//  ROOT CAUSE: The old endpoint returned a raw PDF binary (Content-Type:
-//  application/pdf). Odoo's Shopee connector calls this endpoint and
-//  expects a standard Shopee API JSON envelope:
-//
-//    { "error": "", "response": { "result_list": [{ "order_sn": "...",
-//        "file_type": "PDF", "file_data": "<base64-encoded PDF>" }] } }
-//
-//  Returning a raw binary instead of that JSON caused Odoo to fail
-//  silently — it could not parse the response and therefore never
-//  attached or displayed the waybill PDF on the delivery order.
-//
-//  FIX: Build the PDF buffer, base64-encode it, and return it inside
-//  the expected JSON envelope.  A ?raw=1 query param is kept so the
-//  browser print-label button can still download a raw PDF directly.
+//  download_shipping_document — JSON envelope for Odoo
 // ─────────────────────────────────────────────────────────────────────
 app.post('/api/v2/logistics/download_shipping_document', requireAuth, (req, res) => {
   const order_list = req.body.order_list || [];
@@ -1337,14 +1441,12 @@ app.post('/api/v2/logistics/download_shipping_document', requireAuth, (req, res)
   const pdfBuffer  = buildShippingLabelPDF(order, tracking);
   const pdfBase64  = pdfBuffer.toString('base64');
 
-  // ?raw=1 → serve the binary directly (used by the browser label button)
   if (req.query.raw === '1') {
     res.set('Content-Type', 'application/pdf');
     res.set('Content-Disposition', `inline; filename="label_${order_sn}.pdf"`);
     return res.send(pdfBuffer);
   }
 
-  // Default → JSON envelope expected by Odoo's Shopee connector
   res.json({
     error:      '',
     message:    '',
@@ -1354,7 +1456,6 @@ app.post('/api/v2/logistics/download_shipping_document', requireAuth, (req, res)
         order_sn,
         status:    'READY',
         file_type: 'PDF',
-        // This is what Odoo reads to attach the waybill to the delivery order
         file_data: pdfBase64,
         fail_error:   '',
         fail_message: '',
