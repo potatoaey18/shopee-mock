@@ -1632,7 +1632,14 @@ function handleDownloadShippingDocument(req, res) {
   });
 
   saveState();
-  res.json({ error: '', message: '', request_id: rid(), response: { result_list } });
+  const success = result_list.find(r => r.status === 'READY' && r.file_data);
+  if (success) {
+    const pdfBuffer = Buffer.from(success.file_data, 'base64');
+    res.set('Content-Type', 'application/pdf');
+    res.send(pdfBuffer);
+  } else {
+    res.json({ error: '', message: '', request_id: rid(), response: { result_list } });
+  }
 }
 
 app.post('/api/v2/logistics/download_shipping_document', requireAuth, handleDownloadShippingDocument);
