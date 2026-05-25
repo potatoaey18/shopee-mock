@@ -329,9 +329,18 @@ let orderCounter = 4;
 // ─────────────────────────────────────────────────────────────────────
 app.get('/track/:tracking', (req, res) => {
   const { tracking } = req.params;
+  // Search all possible places the tracking number could be stored
   const order = DB.orders.find(o =>
-    o.tracking_no === tracking || DB.trackingNumbers[o.order_sn] === tracking
-  );
+    o.tracking_no === tracking ||
+    DB.trackingNumbers[o.order_sn] === tracking
+  ) || (() => {
+    // Also try case-insensitive and trimmed match
+    const t = tracking.trim().toUpperCase();
+    return DB.orders.find(o =>
+      (o.tracking_no || '').toUpperCase() === t ||
+      (DB.trackingNumbers[o.order_sn] || '').toUpperCase() === t
+    );
+  })();
   const currentStep = order
     ? (DB.deliveryStatus[order.order_sn] ?? (order.order_status === 'SHIPPED' ? 1 : 0))
     : 1;
@@ -405,7 +414,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       }).join('')}
     </div>
     ${currentStep === 4 ? `<div class="delivered-banner">✅ Package delivered successfully!</div>` : ''}
-    ` : `<p style="color:#888;text-align:center;padding:20px">Tracking number not found.<br><br><strong>${tracking}</strong></p>`}
+    ` : `<p style="color:#888;text-align:center;padding:20px">Tracking number not found.<br><br><strong>${tracking}</strong><br><br>
+    <small style="color:#bbb;font-size:10px">Known tracking numbers:<br>
+    ${Object.entries(DB.trackingNumbers).map(([sn, trk]) => `${sn}: ${trk}`).join('<br>') || '(none yet — orders must be shipped first)'}</small>
+    <br><br><a href="/api/debug" style="font-size:11px;color:#EE4D2D">View debug state →</a></p>`}
   </div>
   <div class="mock-badge">🟠 Shopee Mock API — Demo tracking page</div>
 </div>
@@ -1142,8 +1154,34 @@ body{font-family:Arial,Helvetica,sans-serif;background:#e8e8e8;display:flex;flex
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  AUTH routes
+//  DEBUG endpoint — inspect live DB state
 // ─────────────────────────────────────────────────────────────────────
+app.get('/api/debug', (req, res) => {
+  res.json({
+    orders: DB.orders.map(o => ({
+      order_sn:     o.order_sn,
+      order_status: o.order_status,
+      tracking_no:  o.tracking_no,
+      tracking_db:  DB.trackingNumbers[o.order_sn] || null,
+      label_status: DB.labelStatus[o.order_sn]     || null,
+      delivery_step: DB.deliveryStatus[o.order_sn] ?? null,
+    })),
+    trackingNumbers: DB.trackingNumbers,
+    labelStatus:     DB.labelStatus,
+    deliveryStatus:  DB.deliveryStatus,
+    syncedProducts:  Object.keys(DB.syncedProducts).length,
+  });
+});
+
+// Log all logistics API calls for debugging
+app.use('/api/v2/logistics', (req, res, next) => {
+  console.log(`[LOGISTICS] ${req.method} ${req.path}`);
+  if (Object.keys(req.query).length) console.log(`[LOGISTICS]   query:`, JSON.stringify(req.query));
+  if (req.body && Object.keys(req.body).length) console.log(`[LOGISTICS]   body:`,  JSON.stringify(req.body));
+  next();
+});
+
+
 app.get('/api/v2/shop/auth_partner', (req, res) => {
   const auth_url = buildAuthUrl(req);
   res.json({ error: '', message: '', request_id: rid(), response: { auth_url } });
@@ -1382,18 +1420,37 @@ app.get('/api/v2/logistics/get_shipping_document_result', requireAuth, (req, res
 
 // ─────────────────────────────────────────────────────────────────────
 //  download_shipping_document — returns PDF base64 in JSON envelope
+//  Supports both POST (body) and GET (query param) as Odoo may use either
 // ─────────────────────────────────────────────────────────────────────
-app.post('/api/v2/logistics/download_shipping_document', requireAuth, (req, res) => {
-  const order_list = req.body.order_list || [];
+function handleDownloadShippingDocument(req, res) {
+  // Log exactly what Odoo sent so we can debug
+  console.log(`[LABEL] ${req.method} download_shipping_document`);
+  console.log(`[LABEL]   query:`, JSON.stringify(req.query));
+  console.log(`[LABEL]   body:`,  JSON.stringify(req.body));
+
+  // Accept order_list from body (POST) or query string (GET), in multiple formats
+  let order_list = [];
+  if (req.body && req.body.order_list && req.body.order_list.length) {
+    order_list = req.body.order_list;
+  } else if (req.query.order_sn_list) {
+    // Odoo sometimes sends a comma-separated list
+    order_list = req.query.order_sn_list.split(',').map(s => ({ order_sn: s.trim() }));
+  } else if (req.query.order_list) {
+    try { order_list = JSON.parse(req.query.order_list); } catch (_) {}
+  }
+
   if (!order_list.length) {
-    return res.json({ error: 'missing_order_list', message: 'order_list is required.', request_id: rid(), response: {} });
+    console.warn('[LABEL] No order_list found in request — returning empty result');
+    return res.json({ error: '', message: '', request_id: rid(), response: { result_list: [] } });
   }
 
   const result_list = order_list.map(item => {
-    const order_sn = item.order_sn;
+    // item might be { order_sn } or just a string
+    const order_sn = (typeof item === 'string') ? item : item.order_sn;
     const order    = DB.orders.find(o => o.order_sn === order_sn);
 
     if (!order) {
+      console.warn(`[LABEL] Order not found: ${order_sn}`);
       return { order_sn, status: 'FAILED', file_type: 'PDF', file_data: '', fail_error: 'order_not_found', fail_message: `Order ${order_sn} not found.` };
     }
 
@@ -1404,6 +1461,14 @@ app.post('/api/v2/logistics/download_shipping_document', requireAuth, (req, res)
       console.log(`[LABEL] Auto-generated tracking for ${order_sn}: ${DB.trackingNumbers[order_sn]}`);
     }
 
+    // Also ship the order automatically if it's still READY_TO_SHIP (Odoo may fetch label before shipping)
+    if (order.order_status === 'READY_TO_SHIP') {
+      order.order_status = 'SHIPPED';
+      order.update_time  = ts();
+      DB.deliveryStatus[order_sn] = 1;
+      console.log(`[LABEL] Auto-shipped ${order_sn} so label can be generated`);
+    }
+
     const tracking = DB.trackingNumbers[order_sn];
 
     // Mark label as stored
@@ -1412,7 +1477,7 @@ app.post('/api/v2/logistics/download_shipping_document', requireAuth, (req, res)
     const pdfBuffer = buildShippingLabelPDF(order, tracking);
     const pdfBase64 = pdfBuffer.toString('base64');
 
-    console.log(`[LABEL] Generated PDF for ${order_sn} (${pdfBuffer.length} bytes, tracking: ${tracking})`);
+    console.log(`[LABEL] ✅ Generated PDF for ${order_sn} — tracking: ${tracking} — ${pdfBuffer.length} bytes`);
 
     return {
       order_sn,
@@ -1430,7 +1495,10 @@ app.post('/api/v2/logistics/download_shipping_document', requireAuth, (req, res)
     request_id: rid(),
     response: { result_list },
   });
-});
+}
+
+app.post('/api/v2/logistics/download_shipping_document', requireAuth, handleDownloadShippingDocument);
+app.get('/api/v2/logistics/download_shipping_document',  requireAuth, handleDownloadShippingDocument);
 
 // ─────────────────────────────────────────────────────────────────────
 //  WEBHOOK + 404
