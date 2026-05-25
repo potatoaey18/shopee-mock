@@ -1538,7 +1538,14 @@ app.post('/api/v2/logistics/create_shipping_document', requireAuth, (req, res) =
     return { order_sn: o.order_sn, status: 'READY', fail_error: '', fail_message: '' };
   });
   saveState();
-  res.json({ error: '', message: '', request_id: rid(), response: { result_list } });
+  const successResult = result_list.find(r => r.status === 'READY' && r.file_data);
+  if (successResult) {
+    const pdfBuffer = Buffer.from(successResult.file_data, 'base64');
+    res.set('Content-Type', 'application/pdf');
+    res.send(pdfBuffer);
+  } else {
+    res.json({ error: '', message: '', request_id: rid(), response: { result_list } });
+  }
 });
 
 function handleDocResult(order_list) {
