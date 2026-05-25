@@ -123,161 +123,106 @@ async function notifyOdooDelivered(order_sn) {
   console.warn(`[WEBHOOK] ⚠️  All Odoo webhook paths failed for ${order_sn}.`);
 }
 
-function buildShippingLabelPDF(order, tracking) {
-  return new Promise((resolve, reject) => {
-    const PDFDocument = require('pdfkit');
-    const chunks = [];
-    const doc = new PDFDocument({ size: [420, 340], margin: 0 });
- 
-    doc.on('data', chunk => chunks.push(chunk));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
-    doc.on('error', reject);
- 
-    const addr  = order.recipient_address;
-    const trkNum   = tracking.replace(/\D/g, '').slice(-6) || '000000';
-    const zoneNum  = parseInt(trkNum.slice(0, 2)) % 9 + 1;
-    const routeZone = `B-${400 + zoneNum * 7}-WGP-0${zoneNum % 6 + 1}`;
-    const sortCode  = `B-${494 + zoneNum}-RLC-z${zoneNum % 3 + 1}-0${zoneNum % 4 + 2}`;
-    const hubCode   = `C-0${(zoneNum % 3)+1}-MLMIG-0${(zoneNum % 5)+1}`;
-    const dropLetter = String.fromCharCode(65 + (zoneNum % 4));
-    const dropCode  = `${dropLetter}-0${(zoneNum % 3)+1}-DGT.${(zoneNum % 4)+1}-LR`;
-    const boxL      = String(5 + (zoneNum % 5)).padStart(2,'0');
-    const boxR      = String(3 + (zoneNum % 7)).padStart(2,'0');
-    const totalQty  = order.item_list.reduce((s,i) => s + i.model_quantity_purchased, 0);
- 
-    const ORANGE = '#EE4D2D';
-    const BLACK  = '#111111';
-    const GRAY   = '#555555';
-    const W = 420, H = 340;
- 
-    // ── Background ──────────────────────────────────────────────────────────
-    doc.rect(0, 0, W, H).fill('#ffffff');
- 
-    // ── TOP HEADER BAR ───────────────────────────────────────────────────────
-    doc.rect(0, 0, W, 36).fill(ORANGE);
-    doc.fillColor('#ffffff').fontSize(14).font('Helvetica-Bold')
-       .text('SPX EXPRESS', 10, 9);
-    doc.fontSize(8).font('Helvetica')
-       .text('Shipping Label', 110, 12);
- 
-    // ── ROUTE ZONE (large) ───────────────────────────────────────────────────
-    doc.fillColor(BLACK).fontSize(18).font('Helvetica-Bold')
-       .text(routeZone, 10, 42);
- 
-    // ── BOX NUMBERS (top right) ──────────────────────────────────────────────
-    doc.rect(310, 36, 110, 50).stroke(BLACK);
-    doc.rect(310, 36, 55, 50).stroke(BLACK);
-    doc.fontSize(22).font('Helvetica-Bold').fillColor(BLACK)
-       .text(boxL, 318, 42);
-    doc.text(boxR, 368, 42);
-    doc.fontSize(8).font('Helvetica').fillColor(GRAY)
-       .text(`Zone ${zoneNum}`, 316, 74)
-       .text(dropCode, 356, 74);
- 
-    // ── SORT / HUB CODES ─────────────────────────────────────────────────────
-    doc.fontSize(8).font('Helvetica').fillColor(GRAY)
-       .text(`RTS Sort Code: ${sortCode}`, 10, 66)
-       .text(hubCode, 10, 78);
- 
-    // ── DIVIDER ──────────────────────────────────────────────────────────────
-    doc.moveTo(0, 92).lineTo(W, 92).stroke(BLACK);
- 
-    // ── ORDER ID ─────────────────────────────────────────────────────────────
-    doc.rect(0, 92, W, 18).fill('#f5f5f5');
-    doc.fontSize(8).font('Helvetica').fillColor(GRAY)
-       .text('Order ID:', 10, 97);
-    doc.fontSize(8).font('Helvetica-Bold').fillColor(BLACK)
-       .text(order.order_sn, 58, 97);
-    doc.fontSize(8).font('Helvetica-Bold').fillColor('#ffffff')
-       .rect(340, 93, 70, 16).fill(BLACK);
-    doc.fillColor('#ffffff').text('COD', 363, 97);
- 
-    // ── TRACKING BARCODE AREA ─────────────────────────────────────────────────
-    doc.moveTo(0, 110).lineTo(W, 110).stroke(BLACK);
- 
-    // Simple barcode visual (deterministic bars from tracking number)
-    let seed = 0;
-    for (let i = 0; i < tracking.length; i++) seed = (seed * 31 + tracking.charCodeAt(i)) & 0xffffffff;
-    let x = 30;
-    for (let i = 0; i < 80 && x < 390; i++) {
-      seed = (seed * 1664525 + 1013904223) & 0xffffffff;
-      const w = (Math.abs(seed) % 3) + 1;
-      const isBlack = (Math.abs(seed >> 8) % 3) !== 0;
-      if (isBlack) doc.rect(x, 114, w, 20).fill(BLACK);
-      x += w + 0.5;
+// ─────────────────────────────────────────────────────────────────────
+//  download_shipping_document — returns PDF base64 in JSON envelope
+//  Fixed: async/await, consistent JSON contract, per-order error handling
+// ─────────────────────────────────────────────────────────────────────
+async function handleDownloadShippingDocument(req, res) {
+  console.log(`[LABEL] ${req.method} download_shipping_document`);
+  console.log(`[LABEL]   query:`, JSON.stringify(req.query));
+  console.log(`[LABEL]   body:`,  JSON.stringify(req.body));
+
+  let order_list = [];
+  if (req.body?.order_list?.length) {
+    order_list = req.body.order_list;
+  } else if (req.query.order_sn_list) {
+    order_list = req.query.order_sn_list.split(',').map(s => ({ order_sn: s.trim() }));
+  } else if (req.query.order_list) {
+    try { order_list = JSON.parse(req.query.order_list); } catch (_) {}
+  }
+
+  if (!order_list.length) {
+    console.warn('[LABEL] No order_list found in request — returning empty result');
+    return res.json({ error: '', message: '', request_id: rid(), response: { result_list: [] } });
+  }
+
+  // ✅ Use Promise.all so all orders are processed concurrently and awaited
+  const result_list = await Promise.all(order_list.map(async (item) => {
+    const order_sn = (typeof item === 'string') ? item : item.order_sn;
+    const order    = DB.orders.find(o => o.order_sn === order_sn);
+
+    if (!order) {
+      console.warn(`[LABEL] Order not found: ${order_sn}`);
+      return {
+        order_sn,
+        status: 'FAILED',
+        file_type: 'PDF',
+        file_data: '',
+        fail_error: 'order_not_found',
+        fail_message: `Order ${order_sn} not found.`
+      };
     }
-    doc.fontSize(9).font('Helvetica-Bold').fillColor(BLACK)
-       .text(tracking, 30, 138, { align: 'center', width: 360 });
- 
-    // ── DIVIDER ──────────────────────────────────────────────────────────────
-    doc.moveTo(0, 150).lineTo(W, 150).stroke(BLACK);
- 
-    // ── BUYER SECTION ─────────────────────────────────────────────────────────
-    doc.rect(0, 150, W, 80).fill('#ffffff');
-    // Left label
-    doc.save().rotate(-90, { origin: [14, 190] })
-       .fontSize(7).font('Helvetica-Bold').fillColor(GRAY)
-       .text('BUYER', -20, 187)
-       .restore();
-    doc.moveTo(26, 150).lineTo(26, 230).stroke(GRAY);
- 
-    doc.fontSize(10).font('Helvetica-Bold').fillColor(BLACK)
-       .text(addr.name, 34, 156);
-    doc.fontSize(8).font('Helvetica').fillColor(GRAY)
-       .text(addr.full_address.substring(0, 65), 34, 170, { width: 340, lineGap: 2 });
-    doc.fontSize(8).font('Helvetica').fillColor(BLACK)
-       .text(`${addr.city}   ${addr.state}`, 34, 200);
-    doc.fontSize(10).font('Helvetica-Bold').fillColor(BLACK)
-       .text(addr.zipcode, 340, 196);
- 
-    // ── DIVIDER ──────────────────────────────────────────────────────────────
-    doc.moveTo(0, 230).lineTo(W, 230).stroke(BLACK);
- 
-    // ── SELLER SECTION ────────────────────────────────────────────────────────
-    doc.save().rotate(-90, { origin: [14, 255] })
-       .fontSize(7).font('Helvetica-Bold').fillColor(GRAY)
-       .text('SELLER', -10, 252)
-       .restore();
-    doc.moveTo(26, 230).lineTo(26, 280).stroke(GRAY);
- 
-    doc.fontSize(10).font('Helvetica-Bold').fillColor(BLACK)
-       .text(DB.shop.shop_name, 34, 236);
-    doc.fontSize(8).font('Helvetica').fillColor(GRAY)
-       .text('Metro Manila, Philippines', 34, 249)
-       .text('Mandaluyong City   Metro Manila   1550', 34, 260);
- 
-    // ── DIVIDER ──────────────────────────────────────────────────────────────
-    doc.moveTo(0, 280).lineTo(W, 280).stroke(BLACK);
- 
-    // ── BOTTOM INFO BAR ───────────────────────────────────────────────────────
-    doc.fontSize(8).font('Helvetica').fillColor(GRAY)
-       .text(`Qty: ${totalQty}   Weight: 1,000 g`, 10, 286);
- 
-    // Delivery attempts
-    doc.fontSize(7).font('Helvetica-Bold').fillColor(GRAY).text('Delivery Attempt', 160, 284);
-    [1,2,3].forEach((n,i) => {
-      doc.rect(160 + i*22, 292, 18, 14).stroke(GRAY);
-      doc.fontSize(8).font('Helvetica').fillColor(BLACK).text(String(n), 166 + i*22, 294);
-    });
- 
-    // Return attempts
-    doc.fontSize(7).font('Helvetica-Bold').fillColor(GRAY).text('Return Attempt', 290, 284);
-    [1,2,3].forEach((n,i) => {
-      doc.rect(290 + i*22, 292, 18, 14).stroke(GRAY);
-      doc.fontSize(8).font('Helvetica').fillColor(BLACK).text(String(n), 296 + i*22, 294);
-    });
- 
-    // ── TAGLINE FOOTER ────────────────────────────────────────────────────────
-    doc.moveTo(0, 310).lineTo(W, 310).stroke(BLACK);
-    doc.rect(0, 310, W, 30).fill(ORANGE);
-    doc.fontSize(10).font('Helvetica-Bold').fillColor('#ffffff')
-       .text('ANG DALI-DALI SA SHOPEE', 0, 316, { align: 'center', width: W });
-    doc.fontSize(7).font('Helvetica').fillColor('#ffffff')
-       .text('WITH ON-TIME DELIVERY GUARANTEE  |  MOCK LABEL — Demo Environment', 0, 326, { align: 'center', width: W });
- 
-    doc.end();
+
+    if (!DB.trackingNumbers[order_sn]) {
+      DB.trackingNumbers[order_sn] = 'PHSPX' + Date.now();
+      order.tracking_no = DB.trackingNumbers[order_sn];
+      console.log(`[LABEL] Auto-generated tracking for ${order_sn}: ${DB.trackingNumbers[order_sn]}`);
+    }
+
+    if (order.order_status === 'READY_TO_SHIP') {
+      order.order_status = 'PROCESSED';
+      order.update_time  = ts();
+      DB.deliveryStatus[order_sn] = 1;
+      console.log(`[LABEL] Auto-shipped ${order_sn} so label can be generated`);
+    }
+
+    DB.labelStatus[order_sn] = 'STORED';
+
+    const tracking = DB.trackingNumbers[order_sn];
+
+    try {
+      // ✅ FIXED: await the Promise — this is the critical fix
+      const pdfBuffer = await buildShippingLabelPDF(order, tracking);
+      const pdfBase64 = pdfBuffer.toString('base64');
+
+      console.log(`[LABEL] ✅ Generated PDF for ${order_sn} — tracking: ${tracking} — ${pdfBuffer.length} bytes`);
+
+      return {
+        order_sn,
+        status: 'READY',
+        file_type: 'PDF',
+        file_data: pdfBase64,   // ✅ base64 string, not a Buffer, not a Promise
+        fail_error: '',
+        fail_message: ''
+      };
+    } catch (err) {
+      console.error(`[LABEL] ❌ PDF generation failed for ${order_sn}:`, err);
+      return {
+        order_sn,
+        status: 'FAILED',
+        file_type: 'PDF',
+        file_data: '',
+        fail_error: 'pdf_generation_error',
+        fail_message: err.message
+      };
+    }
+  }));
+
+  saveState();
+
+  // ✅ FIXED: Always return the Shopee JSON envelope — never raw binary
+  // Odoo's connector parses file_data from the JSON; it does NOT expect raw PDF bytes
+  res.set('Content-Type', 'application/json');
+  return res.json({
+    error: '',
+    message: '',
+    request_id: rid(),
+    response: { result_list }
   });
 }
+
+app.post('/api/v2/logistics/download_shipping_document', requireAuth, handleDownloadShippingDocument);
+app.get('/api/v2/logistics/download_shipping_document',  requireAuth, handleDownloadShippingDocument);
 
 // ── ODOO CALLBACK RESOLVER ────────────────────────────────────────────
 function resolveOdooCallback(req, extraParams) {
