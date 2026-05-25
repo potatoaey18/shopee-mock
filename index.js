@@ -1,12 +1,20 @@
 /**
  * ╔══════════════════════════════════════════════════════════════╗
- * ║  SHOPEE MOCK API SERVER  v4.1                                ║
+ * ║  SHOPEE MOCK API SERVER  v4.2                                ║
  * ║  Mimics Shopee Open Platform API for Odoo integration demo   ║
+ * ║  Changes from v4.1:                                          ║
+ * ║  - File-based state persistence (survives restarts)          ║
+ * ║  - Order sync fixed (permissive time filtering + logging)    ║
+ * ║  - Full request logging on /order and /logistics             ║
+ * ║  - label_status PROCESSING → READY auto-upgrade              ║
+ * ║  - /api/demo/reset endpoint to wipe state                    ║
  * ╚══════════════════════════════════════════════════════════════╝
  */
 
 const express = require('express');
 const crypto  = require('crypto');
+const fs      = require('fs');
+const path    = require('path');
 const app     = express();
 
 app.use(express.json());
@@ -17,6 +25,7 @@ const PARTNER_ID    = process.env.PARTNER_ID    || '1';
 const PARTNER_KEY   = process.env.PARTNER_KEY   || '1';
 const PORT          = process.env.PORT          || 3000;
 const ODOO_BASE_URL = (process.env.ODOO_BASE_URL || '').replace(/\/$/, '');
+const STATE_FILE    = process.env.STATE_FILE    || path.join(__dirname, 'shopee_mock_state.json');
 
 // ── HELPERS ───────────────────────────────────────────────────────────
 function verifySignature(req) {
@@ -24,10 +33,10 @@ function verifySignature(req) {
   const { partner_id, timestamp, sign } = req.query;
   if (!partner_id || !timestamp || !sign) return false;
   if (String(partner_id) !== String(PARTNER_ID)) return false;
-  const path      = req.path;
+  const path_     = req.path;
   const shopId    = req.query.shop_id      || '';
   const accessTok = req.query.access_token || '';
-  const base      = `${PARTNER_ID}${path}${timestamp}${accessTok}${shopId}`;
+  const base      = `${PARTNER_ID}${path_}${timestamp}${accessTok}${shopId}`;
   const expected  = crypto.createHmac('sha256', PARTNER_KEY).update(base).digest('hex');
   return sign === expected;
 }
@@ -42,6 +51,41 @@ function requireAuth(req, res, next) {
 function rid()    { return 'mock_' + Math.random().toString(36).slice(2, 10).toUpperCase(); }
 function ts()     { return Math.floor(Date.now() / 1000); }
 function nowStr() { return new Date().toISOString().replace('T', ' ').substring(0, 19); }
+
+// ── STATE PERSISTENCE ─────────────────────────────────────────────────
+function saveState() {
+  try {
+    fs.writeFileSync(STATE_FILE, JSON.stringify({
+      orders:          DB.orders,
+      trackingNumbers: DB.trackingNumbers,
+      labelStatus:     DB.labelStatus,
+      deliveryStatus:  DB.deliveryStatus,
+      syncedProducts:  DB.syncedProducts,
+      orderCounter,
+    }, null, 2));
+  } catch (e) {
+    console.warn('[STATE] Save failed:', e.message);
+  }
+}
+
+function loadState() {
+  try {
+    if (!fs.existsSync(STATE_FILE)) {
+      console.log('[STATE] No saved state found — starting fresh');
+      return;
+    }
+    const saved = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+    if (saved.orders)          DB.orders          = saved.orders;
+    if (saved.trackingNumbers) DB.trackingNumbers = saved.trackingNumbers;
+    if (saved.labelStatus)     DB.labelStatus     = saved.labelStatus;
+    if (saved.deliveryStatus)  DB.deliveryStatus  = saved.deliveryStatus;
+    if (saved.syncedProducts)  DB.syncedProducts  = saved.syncedProducts;
+    if (saved.orderCounter)    orderCounter       = saved.orderCounter;
+    console.log(`[STATE] Restored from ${STATE_FILE} — ${DB.orders.length} orders, ${Object.keys(DB.trackingNumbers).length} tracking numbers`);
+  } catch (e) {
+    console.warn('[STATE] Load failed:', e.message);
+  }
+}
 
 // ── ODOO WEBHOOK NOTIFIER ─────────────────────────────────────────────
 async function notifyOdooDelivered(order_sn) {
@@ -61,8 +105,8 @@ async function notifyOdooDelivered(order_sn) {
     shop_id: DB.shop.shop_id,
     data: { ordersn: order_sn, status: 'COMPLETED', update_time: ts() },
   };
-  for (const path of candidatePaths) {
-    const url = `${ODOO_BASE_URL}${path}`;
+  for (const p of candidatePaths) {
+    const url = `${ODOO_BASE_URL}${p}`;
     try {
       const resp = await fetch(url, {
         method: 'POST',
@@ -84,7 +128,6 @@ function buildShippingLabelPDF(order, tracking) {
   const safe = s => String(s || '').replace(/[()\\]/g, c => '\\' + c);
   const addr = order.recipient_address;
 
-  // Simulate SPX routing codes from tracking number
   const trkNum    = tracking.replace(/\D/g, '').slice(-6) || '000000';
   const zoneNum   = parseInt(trkNum.slice(0, 2)) % 9 + 1;
   const routeZone = `B-${400 + zoneNum * 7}-WGP-0${zoneNum % 6 + 1}`;
@@ -100,45 +143,32 @@ function buildShippingLabelPDF(order, tracking) {
   const totalQty  = order.item_list.reduce((s,i)=>s+i.model_quantity_purchased,0);
 
   const streamLines = [
-    // Header bar
     '/F2 11 Tf 30 310 Td (SPX EXPRESS) Tj',
     '/F1 8 Tf 100 310 Td (Shipping Label) Tj',
-    // Route zone large
     '/F2 16 Tf 30 290 Td (' + safe(routeZone) + ') Tj',
-    // Boxes top-right
     '/F2 18 Tf 310 295 Td (' + safe(boxL) + ') Tj',
     '/F1 8 Tf 310 282 Td (' + safe(hubZoneL) + ') Tj',
     '/F2 18 Tf 350 295 Td (' + safe(boxR) + ') Tj',
     '/F1 8 Tf 350 282 Td (' + safe(hubZoneR) + ') Tj',
-    // Sort code
     '/F1 8 Tf 30 275 Td (RTS Sort Code: ' + safe(sortCode) + ') Tj',
     '/F1 8 Tf 30 263 Td (' + safe(hubCode) + ') Tj',
-    // Drop code large
     '/F2 14 Tf 260 270 Td (' + safe(dropCode) + ') Tj',
-    // Order ID
     '/F1 8 Tf 30 250 Td (Order ID: ' + safe(order.order_sn) + ') Tj',
-    // Tracking barcode simulation
     '/F2 13 Tf 80 228 Td (' + safe(tracking) + ') Tj',
-    // Buyer section
     '/F2 9 Tf 30 210 Td (BUYER) Tj',
     '/F2 10 Tf 60 198 Td (' + safe(addr.name) + ') Tj',
     '/F1 8 Tf 60 186 Td (' + safe(addr.full_address.substring(0, 60)) + ') Tj',
     '/F1 8 Tf 60 174 Td (' + safe(addr.city) + '   ' + safe(addr.state) + ') Tj',
     '/F1 8 Tf 60 162 Td (' + safe(addr.zipcode) + ') Tj',
-    // Seller section
     '/F2 9 Tf 30 145 Td (SELLER) Tj',
     '/F2 10 Tf 60 133 Td (' + safe(DB.shop.shop_name) + ') Tj',
     '/F1 8 Tf 60 121 Td (Metro Manila, PH) Tj',
-    // Bottom info
     '/F1 8 Tf 30 100 Td (Product Quantity: ' + safe(totalQty) + ') Tj',
     '/F1 8 Tf 30 88 Td (Weight: 1,000 g) Tj',
-    // Delivery attempt
     '/F2 8 Tf 30 70 Td (Delivery Attempt) Tj',
     '/F1 10 Tf 30 55 Td (1     2     3) Tj',
-    // Return attempt
     '/F2 8 Tf 260 70 Td (Return Attempt) Tj',
     '/F1 10 Tf 260 55 Td (1     2     3) Tj',
-    // Tagline
     '/F2 10 Tf 80 30 Td (ANG DALI-DALI SA SHOPEE) Tj',
     '/F1 7 Tf 90 19 Td (WITH ON-TIME DELIVERY GUARANTEE) Tj',
     '/F1 7 Tf 100 8 Td (MOCK LABEL — Shopee Demo Environment) Tj',
@@ -324,23 +354,43 @@ const DB = {
 
 let orderCounter = 4;
 
+// ── LOAD PERSISTED STATE (after DB is defined) ────────────────────────
+loadState();
+
+// ─────────────────────────────────────────────────────────────────────
+//  REQUEST LOGGERS — all order and logistics calls
+// ─────────────────────────────────────────────────────────────────────
+app.use('/api/v2/order', (req, res, next) => {
+  console.log(`[ORDER] ${req.method} ${req.path}`);
+  if (Object.keys(req.query).length) console.log(`[ORDER]   query:`, JSON.stringify(req.query));
+  if (req.body && Object.keys(req.body).length) console.log(`[ORDER]   body:`,  JSON.stringify(req.body));
+  next();
+});
+
+app.use('/api/v2/logistics', (req, res, next) => {
+  console.log(`[LOGISTICS] ${req.method} ${req.path}`);
+  if (Object.keys(req.query).length) console.log(`[LOGISTICS]   query:`, JSON.stringify(req.query));
+  if (req.body && Object.keys(req.body).length) console.log(`[LOGISTICS]   body:`,  JSON.stringify(req.body));
+  next();
+});
+
+app.use('/api/v2/product', (req, res, next) => {
+  console.log(`[PRODUCT] ${req.method} ${req.path}`);
+  if (Object.keys(req.query).length) console.log(`[PRODUCT]   query:`, JSON.stringify(req.query));
+  if (req.body && Object.keys(req.body).length) console.log(`[PRODUCT]   body:`,  JSON.stringify(req.body));
+  next();
+});
+
 // ─────────────────────────────────────────────────────────────────────
 //  TRACKING PAGE
 // ─────────────────────────────────────────────────────────────────────
 app.get('/track/:tracking', (req, res) => {
   const { tracking } = req.params;
-  // Search all possible places the tracking number could be stored
+  const t = tracking.trim().toUpperCase();
   const order = DB.orders.find(o =>
-    o.tracking_no === tracking ||
-    DB.trackingNumbers[o.order_sn] === tracking
-  ) || (() => {
-    // Also try case-insensitive and trimmed match
-    const t = tracking.trim().toUpperCase();
-    return DB.orders.find(o =>
-      (o.tracking_no || '').toUpperCase() === t ||
-      (DB.trackingNumbers[o.order_sn] || '').toUpperCase() === t
-    );
-  })();
+    (o.tracking_no || '').toUpperCase() === t ||
+    (DB.trackingNumbers[o.order_sn] || '').toUpperCase() === t
+  );
   const currentStep = order
     ? (DB.deliveryStatus[order.order_sn] ?? (order.order_status === 'SHIPPED' ? 1 : 0))
     : 1;
@@ -475,6 +525,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .sc-btn{display:inline-block;padding:6px 14px;border-radius:4px;font-size:12px;cursor:pointer;font-weight:500;border:none;transition:all .15s;white-space:nowrap}
 .sc-btn-primary{background:#EE4D2D;color:white}.sc-btn-primary:hover{background:#d94426}
 .sc-btn-outline{background:white;color:#555;border:1px solid #ddd}.sc-btn-outline:hover{border-color:#EE4D2D;color:#EE4D2D}
+.sc-btn-danger{background:white;color:#c00;border:1px solid #ffb3b3}.sc-btn-danger:hover{background:#fff1f1}
 .sc-btn-sm{padding:4px 10px;font-size:11px}
 .sc-table-wrap{background:white;border-radius:4px;border:1px solid #e8e8e8;overflow:hidden}
 table{width:100%;border-collapse:collapse}
@@ -531,8 +582,6 @@ tr:hover td{background:#fffaf9}
 .sc-form-group input,.sc-form-group select{padding:6px 10px;border:1px solid #ddd;border-radius:4px;font-size:12px;min-width:120px}
 .sc-toast{position:fixed;bottom:24px;right:24px;background:#333;color:white;padding:10px 18px;border-radius:6px;font-size:12px;font-weight:500;opacity:0;transition:opacity .25s;z-index:9999;max-width:300px}
 .sc-toast.show{opacity:1}
-/* Hidden rows support */
-tr.hidden-row{display:none}
 </style>
 </head>
 <body>
@@ -542,7 +591,7 @@ tr.hidden-row{display:none}
     <div class="sc-topbar-logo-s">S</div>
     <span>Seller Centre</span>
   </a>
-  <span class="sc-topbar-title">Mock API Demo</span>
+  <span class="sc-topbar-title">Mock API Demo v4.2</span>
   <div class="sc-topbar-shop">
     <span class="sc-online-dot"></span>
     ${DB.shop.shop_name} · ID: ${DB.shop.shop_id}
@@ -553,9 +602,11 @@ tr.hidden-row{display:none}
 <div class="sc-sidebar">
   <div class="sc-sidebar-section">Order</div>
   <div class="sc-sidebar-item ${tab === 'orders' ? 'active' : ''}" onclick="switchTab('orders')">My Orders</div>
-
   <div class="sc-sidebar-section">Product</div>
   <div class="sc-sidebar-item ${tab === 'products' ? 'active' : ''}" onclick="switchTab('products')">My Products</div>
+  <div class="sc-sidebar-section">Dev Tools</div>
+  <div class="sc-sidebar-item" onclick="window.open('/api/debug','_blank')">Debug State</div>
+  <div class="sc-sidebar-item" onclick="resetState()" style="color:#c00">Reset All State</div>
 </div>
 
 <div class="sc-main">
@@ -681,7 +732,7 @@ ${!ODOO_BASE_URL ? `<div class="sc-warn-box">⚠️ <strong>ODOO_BASE_URL</stron
         }).join('')}
       </tbody>
     </table>
-    ${DB.orders.length === 0 ? `<div style="text-align:center;padding:40px;color:#bbb"><div style="font-size:40px;margin-bottom:8px">📋</div><div>No Orders Found</div><div style="font-size:11px;margin-top:4px;color:#EE4D2D;cursor:pointer" onclick="location.reload()">Please Reload</div></div>` : ''}
+    ${DB.orders.length === 0 ? `<div style="text-align:center;padding:40px;color:#bbb"><div style="font-size:40px;margin-bottom:8px">📋</div><div>No Orders Found</div></div>` : ''}
   </div>
 </div>
 
@@ -756,13 +807,12 @@ ${!ODOO_BASE_URL ? `<div class="sc-warn-box">⚠️ <strong>ODOO_BASE_URL</stron
 </div>
 </div>
 
-<div class="sc-mock-bar">🟠 Shopee Mock API v4.1 — Demo environment · Partner ID: ${PARTNER_ID}</div>
+<div class="sc-mock-bar">🟠 Shopee Mock API v4.2 — Demo environment · Partner ID: ${PARTNER_ID} · State: ${STATE_FILE}</div>
 <div class="sc-toast" id="sc-toast"></div>
 
 <script>
 const DELIVERY_STEPS = ${JSON.stringify(DELIVERY_STEPS)};
 
-// ── Tab switching (sidebar) ──
 function switchTab(t) {
   document.getElementById('tab-orders').style.display   = t === 'orders'   ? 'block' : 'none';
   document.getElementById('tab-products').style.display = t === 'products' ? 'block' : 'none';
@@ -770,27 +820,16 @@ function switchTab(t) {
   event.target.classList.add('active');
 }
 
-// ── Order tab filter ──
 let currentFilter = 'all';
 
 function filterOrders(type, el) {
   currentFilter = type;
-
-  // Update active tab
   document.querySelectorAll('#order-tabs .sc-tab').forEach(t => t.classList.remove('active'));
   el.classList.add('active');
-
-  // Show/hide rows
   document.querySelectorAll('#orders-tbody tr').forEach(row => {
     const rowFilter = row.getAttribute('data-filter') || '';
-    if (type === 'all') {
-      row.style.display = '';
-    } else {
-      row.style.display = rowFilter === type ? '' : 'none';
-    }
+    row.style.display = (type === 'all' || rowFilter === type) ? '' : 'none';
   });
-
-  // Show "no results" message if all hidden
   updateEmptyState();
 }
 
@@ -890,22 +929,31 @@ function advanceDelivery(sn) {
 function printLabel(sn) {
   window.open('/api/demo/print_label/' + sn, '_blank');
 }
+
+function resetState() {
+  if (!confirm('Reset all orders, tracking numbers, and synced products back to defaults?')) return;
+  fetch('/api/demo/reset', { method: 'POST' })
+    .then(r => r.json())
+    .then(() => { toast('🔄 State reset to defaults'); setTimeout(() => location.reload(), 1200); })
+    .catch(() => toast('❌ Reset failed'));
+}
 </script>
 </body></html>`);
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  DEMO — create / ship / advance order
+//  DEMO endpoints
 // ─────────────────────────────────────────────────────────────────────
 app.post('/api/demo/create_order', (req, res) => {
   const { name, phone, city, carrier, item_id, sku, item_name, qty, price } = req.body;
   orderCounter++;
   const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   const sn    = `SPX${today}${String(orderCounter).padStart(3, '0')}`;
+  const now   = ts();
   const order = {
     order_sn: sn, order_status: 'READY_TO_SHIP',
     fulfillment_flag: 'fulfilled_by_local_seller',
-    create_time: ts(), update_time: ts(),
+    create_time: now, update_time: now,
     buyer_user_id: 1000 + orderCounter,
     buyer_username: name.toLowerCase().replace(/\s+/g, '_'),
     shipping_carrier: carrier || 'SPX Express',
@@ -924,6 +972,7 @@ app.post('/api/demo/create_order', (req, res) => {
     }],
   };
   DB.orders.push(order);
+  saveState();
   console.log(`[DEMO] New order: ${sn} for ${name}`);
   res.json({ order_sn: sn, message: 'Order created successfully' });
 });
@@ -939,6 +988,7 @@ app.post('/api/demo/ship_order', (req, res) => {
   DB.trackingNumbers[order_sn] = tracking;
   DB.labelStatus[order_sn]     = 'PROCESSING';
   DB.deliveryStatus[order_sn]  = 1;
+  saveState();
   console.log(`[DEMO] ${order_sn} shipped — ${tracking}`);
   res.json({ order_sn, tracking_number: tracking, message: 'Order shipped successfully' });
 });
@@ -961,8 +1011,70 @@ app.post('/api/demo/advance_delivery', async (req, res) => {
     });
     notifyOdooDelivered(order_sn).catch(e => console.warn('[WEBHOOK]', e.message));
   }
+  saveState();
   res.json({ order_sn, step: next, step_name: DELIVERY_STEPS[next],
     message: next === 4 ? 'Delivered. Odoo webhook attempted.' : `Advanced to: ${DELIVERY_STEPS[next]}` });
+});
+
+// ── Reset endpoint — wipes persisted state and restores defaults ──────
+app.post('/api/demo/reset', (req, res) => {
+  DB.orders = [
+    {
+      order_sn: 'SPX20260521001', order_status: 'READY_TO_SHIP',
+      fulfillment_flag: 'fulfilled_by_local_seller',
+      create_time: ts() - 3600, update_time: ts() - 60,
+      buyer_user_id: 1001, buyer_username: 'juan_delacruz',
+      shipping_carrier: 'SPX Express', currency: 'PHP', total_amount: 515,
+      estimated_shipping_fee: 0, actual_shipping_fee: 0, actual_shipping_fee_confirmed: false,
+      tracking_no: '',
+      package_list: [{ package_number: '', logistics_status: 'LOGISTICS_REQUEST_CREATED', shipping_carrier: 'SPX Express', item_list: [] }],
+      recipient_address: { name: 'Juan Dela Cruz', phone: '+639171234567', full_address: '123 Rizal Street, Barangay San Antonio, Makati, Metro Manila, 1200, PH', city: 'Makati', state: 'Metro Manila', region: 'PH', zipcode: '1200' },
+      item_list: [
+        { item_id: 10001, model_id: 0, item_name: "Lay's Classic Salted Chips 60g", item_sku: 'LAYS-001', model_sku: 'LAYS-001', model_quantity_purchased: 3, model_original_price: 62, model_discounted_price: 62 },
+        { item_id: 10008, model_id: 0, item_name: "Doritos Nacho Cheese 100g", item_sku: 'DORI-001', model_sku: 'DORI-001', model_quantity_purchased: 2, model_original_price: 75, model_discounted_price: 75 },
+        { item_id: 10015, model_id: 0, item_name: "M&M's Milk Chocolate 100g", item_sku: 'MNMS-001', model_sku: 'MNMS-001', model_quantity_purchased: 1, model_original_price: 129, model_discounted_price: 129 },
+      ],
+    },
+    {
+      order_sn: 'SPX20260521002', order_status: 'READY_TO_SHIP',
+      fulfillment_flag: 'fulfilled_by_local_seller',
+      create_time: ts() - 86400, update_time: ts() - 60,
+      buyer_user_id: 1002, buyer_username: 'maria_santos',
+      shipping_carrier: 'SPX Express', currency: 'PHP', total_amount: 874,
+      estimated_shipping_fee: 0, actual_shipping_fee: 0, actual_shipping_fee_confirmed: false,
+      tracking_no: '',
+      package_list: [{ package_number: '', logistics_status: 'LOGISTICS_REQUEST_CREATED', shipping_carrier: 'SPX Express', item_list: [] }],
+      recipient_address: { name: 'Maria Santos', phone: '+639289876543', full_address: '456 Bonifacio Avenue, Barangay Poblacion, Cebu City, Cebu, 6000, PH', city: 'Cebu City', state: 'Cebu', region: 'PH', zipcode: '6000' },
+      item_list: [
+        { item_id: 10021, model_id: 0, item_name: "Nutella Hazelnut Spread 350g", item_sku: 'NUTE-001', model_sku: 'NUTE-001', model_quantity_purchased: 2, model_original_price: 259, model_discounted_price: 259 },
+        { item_id: 10035, model_id: 0, item_name: "Ferrero Rocher 3pcs Box", item_sku: 'FERR-001', model_sku: 'FERR-001', model_quantity_purchased: 4, model_original_price: 89, model_discounted_price: 89 },
+      ],
+    },
+    {
+      order_sn: 'SPX20260521003', order_status: 'READY_TO_SHIP',
+      fulfillment_flag: 'fulfilled_by_local_seller',
+      create_time: ts() - 7200, update_time: ts() - 60,
+      buyer_user_id: 1003, buyer_username: 'jose_reyes',
+      shipping_carrier: 'J&T Express', currency: 'PHP', total_amount: 337,
+      estimated_shipping_fee: 0, actual_shipping_fee: 0, actual_shipping_fee_confirmed: false,
+      tracking_no: '',
+      package_list: [{ package_number: '', logistics_status: 'LOGISTICS_REQUEST_CREATED', shipping_carrier: 'J&T Express', item_list: [] }],
+      recipient_address: { name: 'Jose Reyes', phone: '+639351112222', full_address: '789 Quezon Boulevard, Barangay Malate, Davao City, Davao del Sur, 8000, PH', city: 'Davao City', state: 'Davao del Sur', region: 'PH', zipcode: '8000' },
+      item_list: [
+        { item_id: 10011, model_id: 0, item_name: "Quaker Oats 800g", item_sku: 'QKRO-001', model_sku: 'QKRO-001', model_quantity_purchased: 1, model_original_price: 149, model_discounted_price: 149 },
+        { item_id: 10005, model_id: 0, item_name: "Cheetos Crunchy 80g", item_sku: 'CHTO-001', model_sku: 'CHTO-001', model_quantity_purchased: 2, model_original_price: 62, model_discounted_price: 62 },
+        { item_id: 10024, model_id: 0, item_name: "Tic Tac Orange 16g", item_sku: 'TICT-001', model_sku: 'TICT-001', model_quantity_purchased: 3, model_original_price: 25, model_discounted_price: 25 },
+      ],
+    },
+  ];
+  DB.trackingNumbers = {};
+  DB.labelStatus     = {};
+  DB.deliveryStatus  = {};
+  DB.syncedProducts  = {};
+  orderCounter = 4;
+  saveState();
+  console.log('[DEMO] State reset to defaults');
+  res.json({ message: 'State reset to defaults' });
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -974,6 +1086,7 @@ app.get('/api/demo/print_label/:order_sn', (req, res) => {
   const tracking = DB.trackingNumbers[order_sn] || 'N/A';
   if (!order) return res.status(404).send('Order not found');
   if (DB.labelStatus[order_sn]) DB.labelStatus[order_sn] = 'STORED';
+  saveState();
 
   const addr     = order.recipient_address;
   const totalQty = order.item_list.reduce((s, i) => s + i.model_quantity_purchased, 0);
@@ -1154,42 +1267,39 @@ body{font-family:Arial,Helvetica,sans-serif;background:#e8e8e8;display:flex;flex
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  DEBUG endpoint — inspect live DB state
+//  DEBUG endpoint
 // ─────────────────────────────────────────────────────────────────────
 app.get('/api/debug', (req, res) => {
   res.json({
+    version: '4.2',
+    stateFile: STATE_FILE,
     orders: DB.orders.map(o => ({
-      order_sn:     o.order_sn,
-      order_status: o.order_status,
-      tracking_no:  o.tracking_no,
-      tracking_db:  DB.trackingNumbers[o.order_sn] || null,
-      label_status: DB.labelStatus[o.order_sn]     || null,
-      delivery_step: DB.deliveryStatus[o.order_sn] ?? null,
+      order_sn:      o.order_sn,
+      order_status:  o.order_status,
+      tracking_no:   o.tracking_no,
+      tracking_db:   DB.trackingNumbers[o.order_sn] || null,
+      label_status:  DB.labelStatus[o.order_sn]     || null,
+      delivery_step: DB.deliveryStatus[o.order_sn]  ?? null,
+      update_time:   o.update_time,
+      create_time:   o.create_time,
     })),
     trackingNumbers: DB.trackingNumbers,
     labelStatus:     DB.labelStatus,
     deliveryStatus:  DB.deliveryStatus,
     syncedProducts:  Object.keys(DB.syncedProducts).length,
+    now:             ts(),
   });
 });
 
-// Log all logistics API calls for debugging
-app.use('/api/v2/logistics', (req, res, next) => {
-  console.log(`[LOGISTICS] ${req.method} ${req.path}`);
-  if (Object.keys(req.query).length) console.log(`[LOGISTICS]   query:`, JSON.stringify(req.query));
-  if (req.body && Object.keys(req.body).length) console.log(`[LOGISTICS]   body:`,  JSON.stringify(req.body));
-  next();
-});
-
-
+// ─────────────────────────────────────────────────────────────────────
+//  AUTH
+// ─────────────────────────────────────────────────────────────────────
 app.get('/api/v2/shop/auth_partner', (req, res) => {
-  const auth_url = buildAuthUrl(req);
-  res.json({ error: '', message: '', request_id: rid(), response: { auth_url } });
+  res.json({ error: '', message: '', request_id: rid(), response: { auth_url: buildAuthUrl(req) } });
 });
 
 app.get('/api/v2/auth/shop/get_auth_link', (req, res) => {
-  const auth_url = buildAuthUrl(req);
-  res.json({ error: '', message: '', request_id: rid(), response: { auth_url } });
+  res.json({ error: '', message: '', request_id: rid(), response: { auth_url: buildAuthUrl(req) } });
 });
 
 app.get('/api/v2/auth/authorize', (req, res) => {
@@ -1247,7 +1357,9 @@ app.post('/api/v2/auth/token/get', (req, res) => {
 
 app.post('/api/v2/auth/access_token/get', (req, res) => {
   res.json({ error: '', message: '', request_id: rid(), response: {
-    access_token: 'MOCK_ACCESS_TOKEN_REFRESHED_' + Date.now(), refresh_token: 'MOCK_REFRESH_TOKEN_REFRESHED_' + Date.now(), expire_in: 86400,
+    access_token: 'MOCK_ACCESS_TOKEN_REFRESHED_' + Date.now(),
+    refresh_token: 'MOCK_REFRESH_TOKEN_REFRESHED_' + Date.now(),
+    expire_in: 86400,
   }});
 });
 
@@ -1299,33 +1411,62 @@ app.post('/api/v2/product/update_stock', requireAuth, (req, res) => {
     const name     = product ? product.name : `Product #${item_id}`;
     DB.syncedProducts[item_id] = { item_id, sku, name, stock: newStock, source: 'odoo', last_sync: nowStr() };
     console.log(`[STOCK] ${sku}: → ${newStock}`);
+    saveState();
   }
   res.json({ error: '', message: '', request_id: rid(), response: { item_id, update_time: ts() } });
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  ORDERS
+//  ORDERS — fixed: no time filtering, full logging
 // ─────────────────────────────────────────────────────────────────────
 app.get('/api/v2/order/get_order_list', requireAuth, (req, res) => {
-  const timeFrom    = parseInt(req.query.update_time_from || req.query.create_time_from) || 0;
-  const timeTo      = parseInt(req.query.update_time_to   || req.query.create_time_to)   || ts();
   const orderStatus = req.query.order_status;
-  DB.orders.forEach(o => { if (o.update_time < timeFrom) o.update_time = ts() - 60; });
-  let orders = DB.orders.filter(o => o.update_time >= timeFrom && o.update_time <= timeTo);
-  if (orderStatus) orders = orders.filter(o => o.order_status === orderStatus);
-  res.json({ error: '', message: '', request_id: rid(), response: {
-    order_list: orders.map(o => ({ order_sn: o.order_sn, order_status: o.order_status, create_time: o.create_time, update_time: o.update_time })),
-    more: false, next_cursor: '',
-  }});
+  const pageSize    = parseInt(req.query.page_size) || 20;
+  const cursor      = req.query.cursor || '';
+
+  // Always bump update_time to now so Odoo's time-window filter never misses orders
+  const nowTs = ts();
+  DB.orders.forEach(o => { o.update_time = nowTs - 30; });
+
+  let orders = DB.orders;
+  if (orderStatus) {
+    orders = orders.filter(o => o.order_status === orderStatus);
+    console.log(`[ORDER] get_order_list — status=${orderStatus} — ${orders.length} orders`);
+  } else {
+    console.log(`[ORDER] get_order_list — all statuses — ${orders.length} orders`);
+  }
+
+  // Paginate if cursor provided (some connectors use cursor-based pagination)
+  const startIdx = cursor ? DB.orders.findIndex(o => o.order_sn === cursor) + 1 : 0;
+  const page     = orders.slice(startIdx, startIdx + pageSize);
+  const hasMore  = startIdx + pageSize < orders.length;
+  const nextCursor = hasMore ? page[page.length - 1].order_sn : '';
+
+  res.json({
+    error: '', message: '', request_id: rid(),
+    response: {
+      order_list: page.map(o => ({
+        order_sn:    o.order_sn,
+        order_status: o.order_status,
+        create_time:  o.create_time,
+        update_time:  o.update_time,
+      })),
+      more:        hasMore,
+      next_cursor: nextCursor,
+      total_count: orders.length,
+    },
+  });
 });
 
 app.get('/api/v2/order/get_order_detail', requireAuth, (req, res) => {
   const raw  = req.query.order_sn_list || '';
   const sns  = raw.split(',').map(s => s.trim()).filter(Boolean);
   const list = sns.length ? DB.orders.filter(o => sns.includes(o.order_sn)) : DB.orders;
+  console.log(`[ORDER] get_order_detail — requested: [${sns.join(',')}] — found: ${list.length}`);
   res.json({ error: '', message: '', request_id: rid(), response: {
     order_list: list.map(o => ({
-      ...o, message_to_seller: '', note: '',
+      ...o,
+      message_to_seller: '', note: '',
       pay_time: o.create_time + 300, days_to_ship: 3, ship_by_date: o.create_time + 86400 * 3,
       invoice_data: null, checkout_shipping_carrier: o.shipping_carrier, actual_shipping_cost: 0,
     }))
@@ -1350,6 +1491,7 @@ app.get('/api/v2/logistics/get_tracking_number', requireAuth, (req, res) => {
     DB.trackingNumbers[order_sn] = 'PHSPX' + Date.now();
     const order = DB.orders.find(o => o.order_sn === order_sn);
     if (order) order.tracking_no = DB.trackingNumbers[order_sn];
+    saveState();
   }
   res.json({ error: '', message: '', request_id: rid(), response: { tracking_number: DB.trackingNumbers[order_sn], plp_number: '', hint_message: '' } });
 });
@@ -1364,6 +1506,8 @@ app.post('/api/v2/logistics/ship_order', requireAuth, (req, res) => {
   order.update_time  = ts();
   DB.trackingNumbers[order_sn] = tracking;
   DB.deliveryStatus[order_sn]  = 1;
+  saveState();
+  console.log(`[LOGISTICS] ship_order ${order_sn} → ${tracking}`);
   res.json({ error: '', message: '', request_id: rid(), response: { hint_message: 'Shipment initiated successfully.' } });
 });
 
@@ -1377,13 +1521,14 @@ app.post('/api/v2/logistics/init_shipment', requireAuth, (req, res) => {
   order.update_time  = ts();
   DB.trackingNumbers[order_sn] = tracking;
   DB.deliveryStatus[order_sn]  = 1;
+  saveState();
+  console.log(`[LOGISTICS] init_shipment ${order_sn} → ${tracking}`);
   res.json({ error: '', message: '', request_id: rid(), response: { order_sn, tracking_number: tracking, hint_message: 'Shipment initiated successfully.' } });
 });
 
 app.post('/api/v2/logistics/create_shipping_document', requireAuth, (req, res) => {
   const { order_list } = req.body;
   const result_list = (order_list || []).map(o => {
-    // Auto-assign tracking if not yet set (so labels are always available)
     if (!DB.trackingNumbers[o.order_sn]) {
       DB.trackingNumbers[o.order_sn] = 'PHSPX' + Date.now();
       const order = DB.orders.find(ord => ord.order_sn === o.order_sn);
@@ -1392,48 +1537,50 @@ app.post('/api/v2/logistics/create_shipping_document', requireAuth, (req, res) =
     DB.labelStatus[o.order_sn] = 'READY';
     return { order_sn: o.order_sn, status: 'READY', fail_error: '', fail_message: '' };
   });
+  saveState();
   res.json({ error: '', message: '', request_id: rid(), response: { result_list } });
 });
 
 function handleDocResult(order_list) {
   return order_list.map(o => {
-    // Auto-assign tracking if missing
     if (!DB.trackingNumbers[o.order_sn]) {
       DB.trackingNumbers[o.order_sn] = 'PHSPX' + Date.now();
       const order = DB.orders.find(ord => ord.order_sn === o.order_sn);
       if (order) { order.tracking_no = DB.trackingNumbers[o.order_sn]; }
     }
+    // Auto-upgrade PROCESSING → READY so Odoo never gets stuck polling
     if (!DB.labelStatus[o.order_sn] || DB.labelStatus[o.order_sn] === 'PROCESSING') {
       DB.labelStatus[o.order_sn] = 'READY';
     }
-    return { order_sn: o.order_sn, status: 'READY', fail_error: '', fail_message: '' };
+    return { order_sn: o.order_sn, status: DB.labelStatus[o.order_sn], fail_error: '', fail_message: '' };
   });
 }
 
 app.post('/api/v2/logistics/get_shipping_document_result', requireAuth, (req, res) => {
-  res.json({ error: '', message: '', request_id: rid(), response: { result_list: handleDocResult(req.body.order_list || []) } });
+  const result_list = handleDocResult(req.body.order_list || []);
+  saveState();
+  res.json({ error: '', message: '', request_id: rid(), response: { result_list } });
 });
+
 app.get('/api/v2/logistics/get_shipping_document_result', requireAuth, (req, res) => {
   let ol = []; try { ol = JSON.parse(req.query.order_list || '[]'); } catch (e) {}
-  res.json({ error: '', message: '', request_id: rid(), response: { result_list: handleDocResult(ol) } });
+  const result_list = handleDocResult(ol);
+  saveState();
+  res.json({ error: '', message: '', request_id: rid(), response: { result_list } });
 });
 
 // ─────────────────────────────────────────────────────────────────────
 //  download_shipping_document — returns PDF base64 in JSON envelope
-//  Supports both POST (body) and GET (query param) as Odoo may use either
 // ─────────────────────────────────────────────────────────────────────
 function handleDownloadShippingDocument(req, res) {
-  // Log exactly what Odoo sent so we can debug
   console.log(`[LABEL] ${req.method} download_shipping_document`);
   console.log(`[LABEL]   query:`, JSON.stringify(req.query));
   console.log(`[LABEL]   body:`,  JSON.stringify(req.body));
 
-  // Accept order_list from body (POST) or query string (GET), in multiple formats
   let order_list = [];
   if (req.body && req.body.order_list && req.body.order_list.length) {
     order_list = req.body.order_list;
   } else if (req.query.order_sn_list) {
-    // Odoo sometimes sends a comma-separated list
     order_list = req.query.order_sn_list.split(',').map(s => ({ order_sn: s.trim() }));
   } else if (req.query.order_list) {
     try { order_list = JSON.parse(req.query.order_list); } catch (_) {}
@@ -1445,7 +1592,6 @@ function handleDownloadShippingDocument(req, res) {
   }
 
   const result_list = order_list.map(item => {
-    // item might be { order_sn } or just a string
     const order_sn = (typeof item === 'string') ? item : item.order_sn;
     const order    = DB.orders.find(o => o.order_sn === order_sn);
 
@@ -1454,14 +1600,12 @@ function handleDownloadShippingDocument(req, res) {
       return { order_sn, status: 'FAILED', file_type: 'PDF', file_data: '', fail_error: 'order_not_found', fail_message: `Order ${order_sn} not found.` };
     }
 
-    // Ensure tracking number exists — generate one if missing
     if (!DB.trackingNumbers[order_sn]) {
       DB.trackingNumbers[order_sn] = 'PHSPX' + Date.now();
       order.tracking_no = DB.trackingNumbers[order_sn];
       console.log(`[LABEL] Auto-generated tracking for ${order_sn}: ${DB.trackingNumbers[order_sn]}`);
     }
 
-    // Also ship the order automatically if it's still READY_TO_SHIP (Odoo may fetch label before shipping)
     if (order.order_status === 'READY_TO_SHIP') {
       order.order_status = 'SHIPPED';
       order.update_time  = ts();
@@ -1469,32 +1613,19 @@ function handleDownloadShippingDocument(req, res) {
       console.log(`[LABEL] Auto-shipped ${order_sn} so label can be generated`);
     }
 
-    const tracking = DB.trackingNumbers[order_sn];
-
-    // Mark label as stored
     DB.labelStatus[order_sn] = 'STORED';
 
+    const tracking  = DB.trackingNumbers[order_sn];
     const pdfBuffer = buildShippingLabelPDF(order, tracking);
     const pdfBase64 = pdfBuffer.toString('base64');
 
     console.log(`[LABEL] ✅ Generated PDF for ${order_sn} — tracking: ${tracking} — ${pdfBuffer.length} bytes`);
 
-    return {
-      order_sn,
-      status:       'READY',
-      file_type:    'PDF',
-      file_data:    pdfBase64,
-      fail_error:   '',
-      fail_message: '',
-    };
+    return { order_sn, status: 'READY', file_type: 'PDF', file_data: pdfBase64, fail_error: '', fail_message: '' };
   });
 
-  res.json({
-    error:      '',
-    message:    '',
-    request_id: rid(),
-    response: { result_list },
-  });
+  saveState();
+  res.json({ error: '', message: '', request_id: rid(), response: { result_list } });
 }
 
 app.post('/api/v2/logistics/download_shipping_document', requireAuth, handleDownloadShippingDocument);
@@ -1514,9 +1645,10 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`\n🟠 Shopee Mock API v4.1 running on port ${PORT}`);
+  console.log(`\n🟠 Shopee Mock API v4.2 running on port ${PORT}`);
   console.log(`   Partner ID   : ${PARTNER_ID}`);
   console.log(`   Partner Key  : ${PARTNER_KEY}`);
   console.log(`   Odoo base URL: ${ODOO_BASE_URL || '(not set)'}`);
-  console.log(`   Strict sig   : ${process.env.STRICT_SIG || 'false (demo mode)'}\n`);
+  console.log(`   Strict sig   : ${process.env.STRICT_SIG || 'false (demo mode)'}`);
+  console.log(`   State file   : ${STATE_FILE}\n`);
 });
