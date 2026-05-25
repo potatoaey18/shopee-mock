@@ -492,7 +492,6 @@ tr:hover td{background:#fffaf9}
 .sc-stock{font-size:13px;font-weight:500;color:#222}
 .sc-stock.low{color:#E65100;font-weight:700}
 .sc-sold-out{font-size:12px;color:#EE4D2D;font-weight:600}
-.sc-sales{color:#999;font-size:12px}
 .sc-synced-tag{display:inline-block;background:#E3F2FD;color:#1565C0;font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px;margin-right:4px}
 .sc-sync-time{font-size:10px;color:#999}
 .sc-no-sync{color:#bbb}
@@ -560,7 +559,6 @@ ${!ODOO_BASE_URL ? `<div class="sc-warn-box">⚠️ <strong>ODOO_BASE_URL</stron
 
   <div class="sc-tabs">
     <div class="sc-tab active" onclick="filterOrders('all',this)">All</div>
-    <div class="sc-tab" onclick="filterOrders('unpaid',this)">Unpaid</div>
     <div class="sc-tab" onclick="filterOrders('toship',this)">To Ship${toShipCount > 0 ? `<span class="sc-tab-count">${toShipCount}</span>` : ''}</div>
     <div class="sc-tab" onclick="filterOrders('shipping',this)">Shipping</div>
     <div class="sc-tab" onclick="filterOrders('completed',this)">Completed (${completedCount})</div>
@@ -673,23 +671,18 @@ ${!ODOO_BASE_URL ? `<div class="sc-warn-box">⚠️ <strong>ODOO_BASE_URL</stron
   <div class="sc-page-header">
     <div class="sc-page-title">My Products</div>
     <div style="display:flex;gap:8px">
-      <button class="sc-btn sc-btn-outline">Product Settings</button>
-      <button class="sc-btn sc-btn-outline">Mass Function</button>
       <button class="sc-btn sc-btn-primary">+ Add a New Product</button>
     </div>
   </div>
 
   <div class="sc-summary">
-    <div class="sc-card"><div class="sc-card-label">Total Products</div><div class="sc-card-value orange">${DB.products.length}</div></div>
     <div class="sc-card"><div class="sc-card-label">Synced from Odoo</div><div class="sc-card-value green">${Object.keys(DB.syncedProducts).length}</div></div>
     <div class="sc-card"><div class="sc-card-label">Out of Stock</div><div class="sc-card-value orange">${Object.values(DB.syncedProducts).filter(p => p.stock === 0).length}</div></div>
     <div class="sc-card"><div class="sc-card-label">Low Stock (≤10)</div><div class="sc-card-value">${Object.values(DB.syncedProducts).filter(p => p.stock > 0 && p.stock <= 10).length}</div></div>
   </div>
 
   <div class="sc-tabs">
-    <div class="sc-tab active">All (${DB.products.length})</div>
-    <div class="sc-tab">Restock (${Object.values(DB.syncedProducts).filter(p => p.stock <= 5).length})</div>
-    <div class="sc-tab">To Review Listing Detail</div>
+    <div class="sc-tab active">All (${Object.keys(DB.syncedProducts).length})</div>
   </div>
 
   <div class="sc-toolbar">
@@ -697,12 +690,11 @@ ${!ODOO_BASE_URL ? `<div class="sc-warn-box">⚠️ <strong>ODOO_BASE_URL</stron
       <input type="text" placeholder="Search Product Name, Parent SKU, SKU, Item ID" id="product-search-input">
       <button class="sc-search-btn">Search</button>
     </div>
-    <select class="sc-filter-select"><option>Category</option>${[...new Set(DB.products.map(p => p.category))].map(c => `<option>${c}</option>`).join('')}</select>
     <button class="sc-btn sc-btn-outline" onclick="location.reload()">↻ Refresh (sync from Odoo)</button>
   </div>
 
   <div class="sc-info-box">
-    ℹ️ <span>Products are synced from Odoo via the <strong>Inventory Sync</strong> action. Stock levels shown here reflect Odoo's current inventory.</span>
+    ℹ️ <span>Showing only products synced from Odoo. Stock levels reflect Odoo's current inventory.</span>
   </div>
 
   <div class="sc-table-wrap">
@@ -712,16 +704,14 @@ ${!ODOO_BASE_URL ? `<div class="sc-warn-box">⚠️ <strong>ODOO_BASE_URL</stron
         <th>Product(s)</th>
         <th>Price ↕</th>
         <th>Stock ↕</th>
-        <th>Sales</th>
         <th>Odoo Sync</th>
-        <th>Action</th>
       </tr></thead>
       <tbody>
-        ${DB.products.map(p => {
+        ${DB.products.filter(p => DB.syncedProducts[p.item_id]).map(p => {
           const synced = DB.syncedProducts[p.item_id];
-          const stock  = synced ? synced.stock : 100;
+          const stock  = synced.stock;
           const stockDisplay = stock === 0 ? `<span class="sc-sold-out">Sold out</span>` : `<span class="sc-stock ${stock <= 10 ? 'low' : ''}">${stock}</span>`;
-          const lastSync = synced ? `<span class="sc-synced-tag">Odoo</span><span class="sc-sync-time">${synced.last_sync}</span>` : '<span class="sc-no-sync">—</span>';
+          const lastSync = `<span class="sc-synced-tag">Odoo</span><span class="sc-sync-time">${synced.last_sync}</span>`;
           return `<tr>
             <td><input type="checkbox"></td>
             <td>
@@ -737,15 +727,10 @@ ${!ODOO_BASE_URL ? `<div class="sc-warn-box">⚠️ <strong>ODOO_BASE_URL</stron
             </td>
             <td class="sc-price">&#8369;${p.price}</td>
             <td>${stockDisplay}</td>
-            <td class="sc-sales">—<div style="font-size:10px;color:#bbb">L30D: 0</div></td>
             <td>${lastSync}</td>
-            <td>
-              <span class="sc-action-link">Edit</span>
-              <span class="sc-action-link">Boost</span>
-              <span class="sc-action-link">More</span>
-            </td>
           </tr>`;
         }).join('')}
+        ${Object.keys(DB.syncedProducts).length === 0 ? `<tr><td colspan="5" style="text-align:center;padding:32px;color:#bbb">No synced products yet. Sync inventory from Odoo to see items here.</td></tr>` : ''}
       </tbody>
     </table>
   </div>
