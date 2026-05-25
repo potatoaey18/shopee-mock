@@ -483,7 +483,7 @@ app.get('/', (req, res) => {
   const tab      = req.query.tab || 'orders';
 
   const toShipCount    = DB.orders.filter(o => o.order_status === 'READY_TO_SHIP').length;
-  const shippingCount  = DB.orders.filter(o => (o.order_status === 'SHIPPED' || o.order_status === 'PROCESSED') && (DB.deliveryStatus[o.order_sn] ?? 0) < 4).length;
+  const shippingCount  = DB.orders.filter(o => o.order_status === 'SHIPPED' && (DB.deliveryStatus[o.order_sn] ?? 0) < 4).length;
   const completedCount = DB.orders.filter(o => DB.deliveryStatus[o.order_sn] === 4).length;
 
   res.send(`<!DOCTYPE html>
@@ -693,7 +693,7 @@ ${!ODOO_BASE_URL ? `<div class="sc-warn-box">⚠️ <strong>ODOO_BASE_URL</stron
         ${DB.orders.map(o => {
           const tracking   = DB.trackingNumbers[o.order_sn] || '';
           const delivStep  = DB.deliveryStatus[o.order_sn];
-          const isShipped  = (o.order_status === 'SHIPPED' || o.order_status === 'PROCESSED');
+          const isShipped  = o.order_status === 'SHIPPED';
           const isDelivered = delivStep === 4;
           const statusLabel = isDelivered ? 'COMPLETED' : o.order_status === 'READY_TO_SHIP' ? 'To Ship' : isShipped ? 'Shipping' : o.order_status;
           const statusCls   = isDelivered ? 'completed' : o.order_status === 'READY_TO_SHIP' ? 'toship' : isShipped ? 'shipping' : 'default';
@@ -982,7 +982,7 @@ app.post('/api/demo/ship_order', (req, res) => {
   const order = DB.orders.find(o => o.order_sn === order_sn);
   if (!order) return res.status(404).json({ error: 'Order not found' });
   const tracking = 'PHSPX' + Date.now();
-  order.order_status = 'PROCESSED';
+  order.order_status = 'SHIPPED';
   order.tracking_no  = tracking;
   order.update_time  = ts();
   DB.trackingNumbers[order_sn] = tracking;
@@ -1502,7 +1502,7 @@ app.post('/api/v2/logistics/ship_order', requireAuth, (req, res) => {
   if (!order) return res.json({ error: 'order_not_found', message: `Order ${order_sn} not found.`, request_id: rid(), response: {} });
   const tracking     = 'PHSPX' + Date.now();
   order.tracking_no  = tracking;
-  order.order_status = 'PROCESSED';
+  order.order_status = 'SHIPPED';
   order.update_time  = ts();
   DB.trackingNumbers[order_sn] = tracking;
   DB.deliveryStatus[order_sn]  = 1;
@@ -1517,7 +1517,7 @@ app.post('/api/v2/logistics/init_shipment', requireAuth, (req, res) => {
   if (!order) return res.json({ error: 'order_not_found', message: `Order ${order_sn} not found.`, request_id: rid(), response: {} });
   const tracking     = 'PHSPX' + Date.now();
   order.tracking_no  = tracking;
-  order.order_status = 'PROCESSED';
+  order.order_status = 'SHIPPED';
   order.update_time  = ts();
   DB.trackingNumbers[order_sn] = tracking;
   DB.deliveryStatus[order_sn]  = 1;
@@ -1607,7 +1607,7 @@ function handleDownloadShippingDocument(req, res) {
     }
 
     if (order.order_status === 'READY_TO_SHIP') {
-      order.order_status = 'PROCESSED';
+      order.order_status = 'SHIPPED';
       order.update_time  = ts();
       DB.deliveryStatus[order_sn] = 1;
       console.log(`[LABEL] Auto-shipped ${order_sn} so label can be generated`);
